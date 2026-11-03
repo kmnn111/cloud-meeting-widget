@@ -326,6 +326,29 @@ function createWindow() {
           setTimeout(() => app.exit(0), 300);
         }, 1500);
       }
+      if (process.env.CM_SHOT_CAPTURE) {
+        // 端到端自检：自动跑通"抓屏→预览文件→遮罩→选区→主进程裁剪→回传"全链路
+        setTimeout(async () => {
+          console.log('[main] capture pipeline test start');
+          const p = win.webContents.executeJavaScript('window.api.captureScreen()');
+          await new Promise(r => setTimeout(r, 2500));
+          const overlay = BrowserWindow.getAllWindows().find(w => w !== win && !w.isDestroyed());
+          if (overlay) {
+            await overlay.webContents.executeJavaScript('window.cap.done({x:100,y:100,w:300,h:200})');
+          } else {
+            console.log('[main] capture pipeline FAIL: overlay not found');
+          }
+          const dataUrl = await p;
+          if (dataUrl && dataUrl.startsWith('data:image')) {
+            const img = nativeImage.createFromDataURL(dataUrl);
+            fs.writeFileSync(path.join(__dirname, 'debug-shot-capture.png'), img.toPNG());
+            console.log('[main] capture pipeline OK', JSON.stringify(img.getSize()));
+          } else {
+            console.log('[main] capture pipeline FAIL, result =', dataUrl);
+          }
+          setTimeout(() => app.exit(0), 300);
+        }, 1500);
+      }
     });
   }
 }
@@ -514,6 +537,18 @@ ipcMain.handle('read-clipboard-image', () => {
 
 /* ---------------- IPC：AI ---------------- */
 ipcMain.handle('ai-extract', async (e, { text, imageDataUrl, settings: s }) => {
+  // 未配置 AI 模型：走免 Key 本地规则解析（纯文字可用；图片必须有视觉模型）
+  const hasKey = s && s.apiKey && s.baseUrl;
+  if (!hasKey) {
+    if (!text && imageDataUrl) {
+      return {
+        ok: false,
+        error: '图片识别需要配置 AI 模型：请在设置填入任意 OpenAI 兼容接口的 API Key（推荐免费方案：智谱 GLM-4V-Flash、SiliconFlow 免费额度）。纯文字通知无需 Key，直接点“AI识别”即可本地解析。'
+      };
+    }
+    const { localExtract } = require('./local-extract');
+    return { ok: true, meeting: localExtract(text || ''), local: true };
+  }
   const now = new Date();
   const week = ['日', '一', '二', '三', '四', '五', '六'][now.getDay()];
   const todayStr = `${now.getFullYear()}年${now.getMonth() + 1}月${now.getDate()}日 星期${week}`;
@@ -522,7 +557,7 @@ ipcMain.handle('ai-extract', async (e, { text, imageDataUrl, settings: s }) => {
 {"title":"会议名称","date":"YYYY-MM-DD","start_time":"HH:MM","end_time":"HH:MM或null","location":"地点或null","attendees":["人名",...],"notes":"补充说明或null"}
 规则：
 1. 相对日期（今天/明天/下周三等）以今天为基准推算；
-2. 只有日期没有时间时，start_time 填 null；
+2. 只有日期没有时间时，start_time 填 null；若原文只有“上午/下午/晚上”等模糊时段而无具体时分，start_time 填 null 并把该时段写入 notes；
 3. attendees 提取通知中出现的参会人姓名或称谓，提取不到给空数组；
 4. 严禁编造原文没有的信息，无法确定的字段填 null。`;
   const temp = Math.min(0.9, Math.max(0.1, Number(s.style) || 0.2));
@@ -595,15 +630,30 @@ ipcMain.handle('save-ics', async (e, meeting) => {
     if (addMin) { mi += addMin; h += Math.floor(mi / 60); mi %= 60; }
     return `${d.replace(/-/g, '')}T${pad(h)}${pad(mi)}00`;
   };
-  const start = dt(meeting.date, meeting.start_time || '09:00');
-  const end = meeting.end_time ? dt(meeting.date, meeting.end_time)
-    : dt(meeting.date, meeting.start_time || '09:00', 60);
+  let timeLines;
+  if (meeting.start_time) {
+    const start = dt(meeting.date, meeting.start_time);
+    const end = meeting.end_time ? dt(meeting.date, meeting.end_time)
+      : dt(meeting.date, meeting.start_time, 60);
+    timeLines = [
+      `DTSTART;TZID=Asia/Shanghai:${start}`,
+      end ? `DTEND;TZID=Asia/Shanghai:${end}` : null
+    ];
+  } else {
+    // 只到日期（或仅上午/下午）的会议 → 全天事件导入系统日历，不硬塞 09:00
+    const d0 = new Date(meeting.date + 'T00:00:00');
+    const d1 = new Date(d0.getTime() + 86400000);
+    const fmt = d => `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}`;
+    timeLines = [
+      `DTSTART;VALUE=DATE:${fmt(d0)}`,
+      `DTEND;VALUE=DATE:${fmt(d1)}`
+    ];
+  }
   const ics = [
     'BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//CloudMeeting//CN', 'CALSCALE:GREGORIAN',
     'BEGIN:VEVENT',
     `UID:${Date.now()}@cloudmeeting`,
-    `DTSTART;TZID=Asia/Shanghai:${start}`,
-    end ? `DTEND;TZID=Asia/Shanghai:${end}` : null,
+    ...timeLines.filter(Boolean),
     `SUMMARY:${(meeting.title || '会议').replace(/[,;\\]/g, ' ')}`,
     meeting.location ? `LOCATION:${meeting.location}` : null,
     meeting.attendees?.length ? `DESCRIPTION:参会人：${meeting.attendees.join('、')}${meeting.notes ? '；' + meeting.notes : ''}` :
@@ -631,18 +681,25 @@ ipcMain.handle('pick-image', async () => {
   return `data:image/${ext === 'jpg' ? 'jpeg' : ext};base64,` + b64;
 });
 
-/* ---------------- IPC：截图选区 ---------------- */
-async function grabFullScreen() {
+/* ---------------- IPC：截图选区 ----------------
+   成熟方案（对齐业界通行做法）：
+   1. desktopCapturer 抓屏后 NativeImage 全程留在主进程；
+   2. 预览写临时文件给遮罩窗 file:// 加载——4K+DPI 下 base64 大图走 IPC 是黑屏/卡死主因；
+   3. 遮罩窗只回传选区矩形（几个数字），裁剪在主进程 nativeImage.crop 完成（无 canvas、无大对象传输）；
+   4. cap-ready 就绪握手投递预览路径，杜绝消息先到未注册的竞态；
+   5. 120 秒安全兜底强制退出，任何异常都不会把用户卡在黑屏里。 */
+async function grabDisplayShot(display) {
   try {
-    const { width, height } = screen.getPrimaryDisplay().size;
-    const dpr = screen.getPrimaryDisplay().scaleFactor || 1;
+    const b = display.bounds;
+    const dpr = display.scaleFactor || 1;
     const sources = await desktopCapturer.getSources({
       types: ['screen'],
-      thumbnailSize: { width: Math.round(width * dpr), height: Math.round(height * dpr) }
+      fetchWindowIcons: false,
+      thumbnailSize: { width: Math.round(b.width * dpr), height: Math.round(b.height * dpr) }
     });
-    const src = sources.find(s => s.display_id === String(screen.getPrimaryDisplay().id)) || sources[0];
+    const src = sources.find(s => s.display_id === String(display.id)) || sources[0];
     if (!src || src.thumbnail.isEmpty()) return null;
-    return 'data:image/png;base64,' + src.thumbnail.toPNG().toString('base64');
+    return src.thumbnail;   // NativeImage，留在主进程内存
   } catch (e) {
     return null;
   }
@@ -652,16 +709,27 @@ ipcMain.handle('capture-screen-region', async () => {
   const wasVisible = win && !win.isDestroyed() && win.isVisible();
   if (wasVisible) win.hide();
   await new Promise(r => setTimeout(r, 650));
-  const full = await grabFullScreen();
-  if (!full) { if (wasVisible) win.show(); return null; }
+
+  // 抓鼠标所在显示器（多屏可用）
+  const disp = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
+  const shot = await grabDisplayShot(disp);
+  if (!shot || shot.isEmpty()) {
+    if (wasVisible && win && !win.isDestroyed()) win.show();
+    return null;
+  }
+  // 预览写临时文件（不走 IPC）
+  const previewFile = path.join(app.getPath('temp'), 'cm-capture-preview.png');
+  try { fs.writeFileSync(previewFile, shot.toPNG()); } catch (e) {
+    if (wasVisible && win && !win.isDestroyed()) win.show();
+    return null;
+  }
 
   return await new Promise((resolve) => {
-    const disp = screen.getPrimaryDisplay();
     const overlay = new BrowserWindow({
       x: disp.bounds.x, y: disp.bounds.y,
       width: disp.bounds.width, height: disp.bounds.height,
       frame: false, transparent: false, alwaysOnTop: true,
-      skipTaskbar: true, resizable: false, movable: false,
+      skipTaskbar: true, resizable: false, movable: false, maximizable: false,
       backgroundColor: '#000000',
       webPreferences: {
         preload: path.join(__dirname, 'capture-preload.js'),
@@ -672,21 +740,50 @@ ipcMain.handle('capture-screen-region', async () => {
     });
     overlay.setAlwaysOnTop(true, 'screen-saver');
     overlay.loadFile(path.join(__dirname, 'renderer', 'capture.html'));
-    overlay.webContents.once('did-finish-load', () => overlay.webContents.send('shot', full));
 
     let settled = false;
-    const cleanup = (dataUrl) => {
+    const finish = (dataUrl) => {
       if (settled) return;
       settled = true;
+      clearTimeout(safety);
+      ipcMain.removeListener('cap-ready', onReady);
       ipcMain.removeListener('crop-done', onDone);
       ipcMain.removeListener('crop-cancel', onCancel);
       if (!overlay.isDestroyed()) overlay.destroy();
+      try { fs.unlinkSync(previewFile); } catch (e) { }
       if (wasVisible && win && !win.isDestroyed()) win.show();
       resolve(dataUrl);
     };
-    const onDone = (e, dataUrl) => cleanup(dataUrl);
-    const onCancel = () => cleanup(null);
+    // 就绪握手：遮罩窗脚本注册完监听后主动来要预览路径
+    const onReady = (e) => {
+      if (e.sender !== overlay.webContents) return;
+      overlay.webContents.send('shot-path', previewFile);
+    };
+    // crop-done 收到的是选区矩形（窗口 CSS 像素）或 null=全屏，裁剪在主进程做
+    const onDone = (e, rect) => {
+      if (e.sender !== overlay.webContents) return;
+      const imgSize = shot.getSize();
+      const kx = imgSize.width / disp.bounds.width;
+      const ky = imgSize.height / disp.bounds.height;
+      if (!rect || !rect.w || !rect.h) { finish(shot.toDataURL()); return; }
+      try {
+        const x = clamp(Math.round(rect.x * kx), 0, imgSize.width - 2);
+        const y = clamp(Math.round(rect.y * ky), 0, imgSize.height - 2);
+        const w = clamp(Math.round(rect.w * kx), 2, imgSize.width - x);
+        const h = clamp(Math.round(rect.h * ky), 2, imgSize.height - y);
+        finish(shot.crop({ x, y, width: w, height: h }).toDataURL());
+      } catch (err) {
+        finish(shot.toDataURL());
+      }
+    };
+    const onCancel = (e) => {
+      if (e.sender !== overlay.webContents) return;
+      finish(null);
+    };
+    ipcMain.on('cap-ready', onReady);
     ipcMain.on('crop-done', onDone);
     ipcMain.on('crop-cancel', onCancel);
+    // 兜底：任何情况下不把用户卡在黑屏（异常/消息丢失 120 秒后自动恢复）
+    const safety = setTimeout(() => finish(null), 120000);
   });
 });

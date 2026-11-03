@@ -66,10 +66,10 @@ function renderPill() {
     return;
   }
   const first = list[0];
-  const t = first.start_time || '时间待定';
+  const tp = first.start_time ? first.start_time + ' ' : '';   // 无具体时间不显示"时间待定"
   line.textContent = list.length === 1
-    ? `${t} ${first.title || '会议'}${first.location ? ' · ' + first.location : ''}`
-    : `${t} ${first.title || '会议'} 等 ${list.length} 场`;
+    ? `${tp}${first.title || '会议'}${first.location ? ' · ' + first.location : ''}`
+    : `${tp}${first.title || '会议'} 等 ${list.length} 场`;
   line.classList.add('busy');
   $('pill-count').textContent = list.length + '场';
 }
@@ -207,12 +207,18 @@ function renderEvents() {
     box.innerHTML = '<div class="empty-day">这一天暂无会议 · 把通知粘贴到下方输入框试试</div>';
     return;
   }
-  box.innerHTML = list.map(e => `
+  box.innerHTML = list.map(e => {
+    // 没填具体时分的会议（只到日期或上午/下午）不显示"时间待定"，时间行整段省略
+    const meta = [];
+    if (e.start_time) meta.push(e.start_time + (e.end_time ? ' - ' + e.end_time : ''));
+    if (e.location) meta.push(e.location);
+    return `
     <div class="event-card" data-id="${e.id}" title="点击查看会议详情">
       <div class="e-title">${esc(e.title || '会议')}</div>
-      <div class="e-meta">${e.start_time ? esc(e.start_time) : '时间待定'}${e.end_time ? ' - ' + esc(e.end_time) : ''}${e.location ? ' · ' + esc(e.location) : ''}</div>
+      ${meta.length ? `<div class="e-meta">${esc(meta.join(' · '))}</div>` : ''}
       ${e.attendees && e.attendees.length ? `<div class="e-people">👥 ${esc(e.attendees.join('、'))}</div>` : ''}
-    </div>`).join('');
+    </div>`;
+  }).join('');
   box.querySelectorAll('.event-card').forEach(card => {
     card.addEventListener('click', () => {
       const e = events.find(x => x.id === card.dataset.id);
@@ -351,9 +357,11 @@ async function runAI() {
   }
   if (!text && !img) { toast('先粘贴通知文字、截图，或点相机按钮截屏'); return; }
 
-  if (!settings.apiKey || !settings.baseUrl) {
+  const hasModel = settings.apiKey && settings.baseUrl;
+  if (!hasModel && !text) {
+    // 只有图片且没配模型：图片识别必须有视觉模型，引导配置（纯文字无需 Key）
     fillSettings(); renderPeopleEdit(); showPanel('settings-panel');
-    $('test-result').textContent = '请先在设置里填写 AI 模型的接口地址和 API Key';
+    $('test-result').textContent = '图片识别需要 AI 模型：请填写接口地址和 API Key。纯文字通知无需 Key，直接点“AI识别”即可本地解析';
     return;
   }
 
@@ -361,7 +369,7 @@ async function runAI() {
   btn.disabled = true;
   const st = $('ai-status');
   st.classList.remove('hidden', 'err');
-  st.textContent = 'AI 正在阅读通知…';
+  st.textContent = hasModel ? 'AI 正在阅读通知…' : '正在本地解析（无需 Key）…';
 
   const r = await window.api.aiExtract({ text, imageDataUrl: img, settings });
   btn.disabled = false;
@@ -372,8 +380,8 @@ async function runAI() {
     st.textContent = r.error;
     return;
   }
-  st.textContent = '识别完成';
-  setTimeout(() => st.classList.add('hidden'), 1500);
+  st.textContent = r.local ? '本地解析完成 · 结果仅供参考，请核对' : '识别完成';
+  setTimeout(() => st.classList.add('hidden'), 2600);
   fillConfirm(r.meeting);
   if (settings.autoWrite) { saveMeeting(); }
   else showPanel('confirm-panel');

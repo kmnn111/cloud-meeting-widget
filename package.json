@@ -1,7 +1,7 @@
 {
   "name": "meeting-cloud-widget",
   "productName": "云上会议",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "description": "Windows桌面 AI会议日历助手：一键识别会议通知，自动记录日历与参会人（Electron）",
   "main": "main.js",
   "author": "大软子哥哥",
@@ -33,6 +33,7 @@
       "preload.js",
       "capture-preload.js",
       "holidays.js",
+      "local-extract.js",
       "renderer/**/*",
       "node_modules/**/*",
       "package.json"

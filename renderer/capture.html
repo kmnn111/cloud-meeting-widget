@@ -2,18 +2,12 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:;">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: file:;">
 <title>截取屏幕区域</title>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html, body { width: 100%; height: 100%; overflow: hidden; cursor: crosshair; user-select: none; background: #000; }
-  #shot { position: absolute; inset: 0; width: 100%; height: 100%; }
-  #mask {
-    position: absolute; left: 0; top: 0; width: 100%; height: 100%;
-    background: rgba(0, 0, 0, 0);
-    transition: background .1s;
-    pointer-events: none;
-  }
+  #shot { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: fill; }
   #sel {
     position: absolute; display: none;
     border: 1.5px solid #4da3ff;
@@ -52,7 +46,6 @@
 </head>
 <body>
   <img id="shot" src="" alt="">
-  <div id="mask"></div>
   <div id="sel"><span class="size"></span></div>
   <div id="tip">拖动鼠标框选截图区域 · Esc 取消</div>
   <div id="hint-bar">
@@ -65,16 +58,21 @@
 const img = document.getElementById('shot');
 const sel = document.getElementById('sel');
 const tip = document.getElementById('tip');
-let sx = 0, sy = 0, dragging = false, rect = null;
+let sx = 0, sy = 0, dragging = false, rect = null, ready = false;
 
-window.cap.onShot(dataUrl => { img.src = dataUrl; });
+// 主进程就绪握手：注册好监听再要预览路径，杜绝消息竞态
+window.cap.onShotPath(p => {
+  ready = true;
+  tip.textContent = '拖动鼠标框选截图区域 · Esc 取消';
+  img.src = 'file:///' + String(p).replace(/\\/g, '/');
+});
+img.onerror = () => {
+  tip.textContent = '截图预览加载失败 · 按 Esc 退出后重试';
+};
+window.cap.ready();
 
-function getRect() {
-  const r = img.getBoundingClientRect();
-  return r; // 图片铺满窗口，显示坐标 = 窗口坐标
-}
 function scale() {
-  const r = getRect();
+  const r = img.getBoundingClientRect();
   return { kx: img.naturalWidth / r.width, ky: img.naturalHeight / r.height };
 }
 
@@ -99,7 +97,7 @@ document.addEventListener('mouseup', e => {
   if (w < 6 && h < 6) { // 点击视为全屏
     rect = null;
     sel.style.display = 'none';
-    finishFull();
+    window.cap.done(null);
     return;
   }
   rect = {
@@ -118,35 +116,19 @@ function update(x, y) {
   sel.querySelector('.size').textContent = Math.round(w) + ' × ' + Math.round(h);
 }
 
-function cropTo(dataUrl, r) {
-  const { kx, ky } = scale();
-  const c = document.createElement('canvas');
-  c.width = Math.round(r.w * kx);
-  c.height = Math.round(r.h * ky);
-  const ctx = c.getContext('2d');
-  ctx.drawImage(img,
-    Math.round(r.x * kx), Math.round(r.y * ky),
-    Math.round(r.w * kx), Math.round(r.h * ky),
-    0, 0, c.width, c.height);
-  return c.toDataURL('image/png');
-}
-
-function finishFull() {
-  window.cap.done(img.src);
-}
+// 只回传选区矩形（几个数字），裁剪由主进程 nativeImage.crop 完成
 function finishCrop() {
-  if (!rect) { finishFull(); return; }
-  window.cap.done(cropTo(img.src, rect));
+  if (!rect) { window.cap.done(null); return; }
+  window.cap.done(rect);
 }
 
 document.getElementById('btn-ok').onclick = finishCrop;
-document.getElementById('btn-full').onclick = () => { rect = null; sel.style.display = 'none'; finishFull(); };
+document.getElementById('btn-full').onclick = () => { rect = null; sel.style.display = 'none'; window.cap.done(null); };
 document.getElementById('btn-cancel').onclick = () => window.cap.cancel();
 document.addEventListener('keydown', e => {
   if (e.key === 'Escape') window.cap.cancel();
   if (e.key === 'Enter') finishCrop();
 });
-// 阻止右键菜单干扰
 document.addEventListener('contextmenu', e => e.preventDefault());
 </script>
 </body>
