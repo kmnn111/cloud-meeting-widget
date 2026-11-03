@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:;">
+<link rel="stylesheet" href="style.css">
+<title>云上会议</title>
+</head>
+<body>
+<div id="shell">
+
+  <!-- 标题栏（可拖动） -->
+  <header id="drag-bar">
+    <div class="logo-dot"></div>
+    <span id="app-title">云上会议</span>
+    <div class="bar-btns">
+      <button id="btn-mini" class="bar-btn no-drag" title="吸顶小窗 · 今日会议">
+        <svg viewBox="0 0 24 24" width="15" height="15"><path fill="currentColor" d="M3 5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-6l-4 4v-4H5a2 2 0 0 1-2-2V5zm4 3v2h10V8H7z"/></svg>
+      </button>
+      <button id="btn-settings" class="bar-btn no-drag" title="设置">
+        <svg viewBox="0 0 24 24" width="15" height="15"><path fill="currentColor" d="M12 15.5A3.5 3.5 0 1 1 12 8.5a3.5 3.5 0 0 1 0 7zm7.4-3.5c0-.5-.05-.98-.14-1.45l2.02-1.58-2-3.46-2.39.96c-.74-.6-1.6-1.05-2.53-1.32L14 2.5h-4l-.36 2.65c-.93.27-1.79.72-2.53 1.32l-2.39-.96-2 3.46L4.74 10.5c-.09.47-.14.95-.14 1.45s.05.98.14 1.45l-2.02 1.58 2 3.46 2.39-.96c.74.6 1.6 1.05 2.53 1.32L10 21.5h4l.36-2.65c.93-.27 1.79-.72 2.53-1.32l2.39.96 2-3.46-2.02-1.58c.09-.47.14-.95.14-1.45z"/></svg>
+      </button>
+      <button id="btn-min" class="bar-btn no-drag" title="最小化">
+        <svg viewBox="0 0 24 24" width="15" height="15"><path stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M5 12h14"/></svg>
+      </button>
+      <button id="btn-hide" class="bar-btn no-drag" title="收起到托盘">
+        <svg viewBox="0 0 24 24" width="15" height="15"><path fill="currentColor" d="M7.4 8.6 12 13.2l4.6-4.6L18 10l-6 6-6-6z"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <!-- 日历 -->
+  <div id="cal-card">
+    <div id="cal-head">
+      <div id="cal-title">
+        <span id="cal-year">2026</span><span class="cal-unit">年</span><span id="cal-month">11</span><span class="cal-unit">月</span>
+        <span id="cal-lunartag"></span>
+      </div>
+      <div class="cal-actions">
+        <button id="btn-today" class="pill-btn no-drag">今天</button>
+        <button id="prev-month" class="nav-btn">‹</button>
+        <button id="next-month" class="nav-btn">›</button>
+      </div>
+    </div>
+
+    <div id="week-row">
+      <span class="wk sun">日</span><span class="wk">一</span><span class="wk">二</span><span class="wk">三</span><span class="wk">四</span><span class="wk">五</span><span class="wk sun">六</span>
+    </div>
+
+    <div id="cal-grid"></div>
+  </div>
+
+  <!-- 当日会议列表 -->
+  <div id="day-panel">
+    <div id="day-title"></div>
+    <div id="event-list"></div>
+  </div>
+
+  <!-- 底部输入条 -->
+  <div id="input-bar">
+    <div id="img-preview" class="hidden">
+      <img id="preview-img" src="" alt="">
+      <button id="preview-clear">×</button>
+    </div>
+    <div class="input-row">
+      <button id="btn-shot" class="icon-btn" title="截取屏幕（挂件会自动隐藏）">
+        <svg viewBox="0 0 24 24" width="17" height="17"><path fill="currentColor" d="M9.4 4h5.2l1.2 2H20a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4.2l1.2-2zM12 16.5a4 4 0 1 0 0-8 4 4 0 0 0 0 8zm0-2a2 2 0 1 1 0-4 2 2 0 0 1 0 4z"/></svg>
+      </button>
+      <button id="btn-attach" class="icon-btn" title="选择图片">
+        <svg viewBox="0 0 24 24" width="17" height="17"><path fill="currentColor" d="M16.5 6.5 8 15a2.12 2.12 0 0 0 3 3l8.5-8.5a4.24 4.24 0 0 0-6-6L4.6 11.9a6.36 6.36 0 0 0 9 9l8-8-1.4-1.4-8 8a4.24 4.24 0 1 1-6-6L15 4.4a2.12 2.12 0 0 1 3 3L10.5 15l-1.4-1.4 8-8.5z" transform="scale(.9)"/></svg>
+      </button>
+      <textarea id="msg-input" rows="1" placeholder="粘贴会议通知文字，或截图给 AI…"></textarea>
+      <button id="btn-ai" title="AI 识别并记录">
+        <svg viewBox="0 0 24 24" width="15" height="15"><path fill="currentColor" d="M12 2l1.8 5.2L19 9l-5.2 1.8L12 16l-1.8-5.2L5 9l5.2-1.8L12 2zm7 11l.9 2.6L22.5 17l-2.6.9L19 20.5l-.9-2.6L15.5 17l2.6-.9L19 13zM5 14l.7 2.1L8 17l-2.3.9L5 20l-.7-2.1L2 17l2.3-.9L5 14z"/></svg>
+        <span>AI识别</span>
+      </button>
+    </div>
+    <div id="ai-status" class="hidden"></div>
+  </div>
+
+  <!-- 遮罩层 -->
+  <div id="overlay" class="hidden">
+
+    <!-- 设置面板 -->
+    <div id="settings-panel" class="panel hidden">
+      <div class="panel-head">
+        <span>设置</span>
+        <button class="panel-close" data-close="settings-panel">×</button>
+      </div>
+
+      <div class="section-title">AI 模型</div>
+      <label>接口地址（OpenAI 兼容）</label>
+      <input id="set-baseurl" type="text" placeholder="https://api.openai.com/v1">
+      <label>模型名称</label>
+      <input id="set-model" type="text" placeholder="gpt-4o-mini / qwen-vl-plus …">
+      <label>API Key</label>
+      <div class="key-row">
+        <input id="set-apikey" type="password" placeholder="sk-…">
+        <button id="key-eye" title="显示/隐藏">👁</button>
+      </div>
+      <label>AI 风格：严谨 ←→ 灵活</label>
+      <input id="set-style" type="range" min="0.1" max="0.9" step="0.1" value="0.2">
+      <div class="hint">提取会议信息建议“严谨”（默认），AI 只照原文提取、不会编造</div>
+
+      <div class="section-title">参会人员</div>
+      <div id="people-list" class="chip-wrap"></div>
+      <div class="key-row">
+        <input id="people-input" type="text" placeholder="输入姓名，回车添加">
+        <button id="btn-add-people" class="mini-btn">添加</button>
+      </div>
+      <div class="hint">识别会议后可从这里勾选参会人</div>
+
+      <div class="section-title">通用</div>
+      <label>OTA 更新源（选填，留空使用内置 GitHub 源）</label>
+      <input id="set-updateurl" type="text" placeholder="https://github.com/kmnn111/cloud-meeting-widget/releases/latest/download">
+      <div class="key-row">
+        <button id="btn-check-update" class="mini-btn">检查更新</button>
+      </div>
+      <div class="switch-row">
+        <span>识别后自动写入日历（免确认）</span>
+        <label class="switch"><input id="set-autowrite" type="checkbox"><span class="slider"></span></label>
+      </div>
+      <div class="switch-row">
+        <span>写入后自动打开 .ics 导入系统日历<small>（会弹系统文件关联提示，默关）</small></span>
+        <label class="switch"><input id="set-autoopenics" type="checkbox"><span class="slider"></span></label>
+      </div>
+      <div class="switch-row">
+        <span>窗口置顶（默认关，不遮挡其他应用）</span>
+        <label class="switch"><input id="set-alwaysontop" type="checkbox"><span class="slider"></span></label>
+      </div>
+      <div class="switch-row">
+        <span>开机自动启动</span>
+        <label class="switch"><input id="set-autostart" type="checkbox"><span class="slider"></span></label>
+      </div>
+
+      <div class="panel-btns">
+        <button id="btn-test" class="ghost-btn">测试连接</button>
+        <button id="btn-save-settings" class="primary-btn">保存</button>
+      </div>
+      <div id="test-result" class="hint"></div>
+    </div>
+
+    <!-- 会议确认卡片 / 详情 -->
+    <div id="confirm-panel" class="panel hidden">
+      <div class="panel-head">
+        <span id="cf-head-title">AI 识别结果</span>
+        <button class="panel-close" data-close="confirm-panel">×</button>
+      </div>
+      <label>会议主题</label>
+      <input id="cf-title" type="text">
+      <div class="cf-row">
+        <div><label>日期</label><input id="cf-date" type="date"></div>
+        <div><label>开始</label><input id="cf-start" type="time"></div>
+        <div><label>结束</label><input id="cf-end" type="time"></div>
+      </div>
+      <label>地点</label>
+      <input id="cf-location" type="text" placeholder="（无）">
+      <label>参会人 · 点击勾选</label>
+      <div id="cf-people" class="chip-wrap"></div>
+      <div class="key-row">
+        <input id="cf-people-add" type="text" placeholder="添加新参会人，回车">
+      </div>
+      <label>备注</label>
+      <input id="cf-notes" type="text" placeholder="（无）">
+      <div class="panel-btns">
+        <button id="btn-delete-meeting" class="danger-btn hidden">删除会议</button>
+        <button id="btn-cancel-meeting" class="ghost-btn">忽略</button>
+        <button id="btn-save-meeting" class="primary-btn">写入日历</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 水彩云朵装饰 -->
+  <svg id="deco-clouds" viewBox="0 0 400 60" preserveAspectRatio="none">
+    <path d="M30 42 q8-16 26-14 q6-12 22-10 q16 2 18 14 q14 0 14 10z" fill="#ffffff" opacity=".5"/>
+    <path d="M250 30 q6-12 20-11 q5-9 17-7 q13 2 14 11 q10 1 10 8z" fill="#ffffff" opacity=".4"/>
+  </svg>
+</div>
+
+<!-- 吸顶胶囊小窗（单窗口 setShape 架构：收起态只显示这块） -->
+<div id="pill">
+  <div id="pill-grip" class="drag" title="按住拖动（拖离顶部即可退出吸顶）"><div class="logo-dot"></div></div>
+  <div id="pill-mid">
+    <div id="pill-time-line"><span id="pill-time">--:--</span><span id="pill-sec">00</span></div>
+    <div id="pill-date">----年--月--日</div>
+    <div id="pill-meet">今日无会议</div>
+  </div>
+  <div id="pill-right">
+    <div id="pill-count">无</div>
+    <div id="pill-count-label">今日会议</div>
+  </div>
+</div>
+
+<div id="toast" class="hidden"></div>
+<script src="app.js"></script>
+</body>
+</html>

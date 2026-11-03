@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:;">
+<title>截取屏幕区域</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; cursor: crosshair; user-select: none; background: #000; }
+  #shot { position: absolute; inset: 0; width: 100%; height: 100%; }
+  #mask {
+    position: absolute; left: 0; top: 0; width: 100%; height: 100%;
+    background: rgba(0, 0, 0, 0);
+    transition: background .1s;
+    pointer-events: none;
+  }
+  #sel {
+    position: absolute; display: none;
+    border: 1.5px solid #4da3ff;
+    box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.45);
+    background: transparent;
+    pointer-events: none;
+  }
+  #sel .size {
+    position: absolute; right: 4px; bottom: -22px;
+    background: rgba(0,0,0,0.75); color: #fff; font: 11px/1.6 "Microsoft YaHei", sans-serif;
+    padding: 1px 8px; border-radius: 6px;
+  }
+  #tip {
+    position: fixed; top: 28px; left: 50%; transform: translateX(-50%);
+    background: rgba(20, 26, 34, 0.82); color: #fff;
+    font: 13px/1 "Microsoft YaHei", sans-serif;
+    padding: 11px 22px; border-radius: 999px;
+    letter-spacing: 1px; pointer-events: none;
+  }
+  #hint-bar {
+    position: fixed; bottom: 26px; left: 50%; transform: translateX(-50%);
+    display: flex; gap: 10px;
+    pointer-events: auto;
+  }
+  #hint-bar button {
+    font: 12px/1 "Microsoft YaHei", sans-serif;
+    border: none; border-radius: 999px; padding: 9px 18px;
+    cursor: pointer;
+    background: rgba(255, 255, 255, 0.14); color: #fff;
+    backdrop-filter: blur(8px);
+    border: 1px solid rgba(255,255,255,0.25);
+  }
+  #hint-bar button.primary { background: #0a84ff; border-color: #0a84ff; }
+  #hint-bar button:hover { filter: brightness(1.15); }
+</style>
+</head>
+<body>
+  <img id="shot" src="" alt="">
+  <div id="mask"></div>
+  <div id="sel"><span class="size"></span></div>
+  <div id="tip">拖动鼠标框选截图区域 · Esc 取消</div>
+  <div id="hint-bar">
+    <button id="btn-full">全屏截图</button>
+    <button id="btn-cancel">取消 (Esc)</button>
+    <button id="btn-ok" class="primary">确定 (Enter)</button>
+  </div>
+
+<script>
+const img = document.getElementById('shot');
+const sel = document.getElementById('sel');
+const tip = document.getElementById('tip');
+let sx = 0, sy = 0, dragging = false, rect = null;
+
+window.cap.onShot(dataUrl => { img.src = dataUrl; });
+
+function getRect() {
+  const r = img.getBoundingClientRect();
+  return r; // 图片铺满窗口，显示坐标 = 窗口坐标
+}
+function scale() {
+  const r = getRect();
+  return { kx: img.naturalWidth / r.width, ky: img.naturalHeight / r.height };
+}
+
+document.addEventListener('mousedown', e => {
+  if (e.target.closest('#hint-bar')) return;
+  dragging = true;
+  sx = e.clientX; sy = e.clientY;
+  sel.style.display = 'block';
+  tip.style.display = 'none';
+  update(e.clientX, e.clientY);
+});
+
+document.addEventListener('mousemove', e => {
+  if (dragging) update(e.clientX, e.clientY);
+});
+
+document.addEventListener('mouseup', e => {
+  if (!dragging) return;
+  dragging = false;
+  update(e.clientX, e.clientY);
+  const w = Math.abs(e.clientX - sx), h = Math.abs(e.clientY - sy);
+  if (w < 6 && h < 6) { // 点击视为全屏
+    rect = null;
+    sel.style.display = 'none';
+    finishFull();
+    return;
+  }
+  rect = {
+    x: Math.min(sx, e.clientX), y: Math.min(sy, e.clientY),
+    w, h
+  };
+});
+
+function update(x, y) {
+  const l = Math.min(sx, x), t = Math.min(sy, y);
+  const w = Math.abs(x - sx), h = Math.abs(y - sy);
+  sel.style.left = l + 'px';
+  sel.style.top = t + 'px';
+  sel.style.width = w + 'px';
+  sel.style.height = h + 'px';
+  sel.querySelector('.size').textContent = Math.round(w) + ' × ' + Math.round(h);
+}
+
+function cropTo(dataUrl, r) {
+  const { kx, ky } = scale();
+  const c = document.createElement('canvas');
+  c.width = Math.round(r.w * kx);
+  c.height = Math.round(r.h * ky);
+  const ctx = c.getContext('2d');
+  ctx.drawImage(img,
+    Math.round(r.x * kx), Math.round(r.y * ky),
+    Math.round(r.w * kx), Math.round(r.h * ky),
+    0, 0, c.width, c.height);
+  return c.toDataURL('image/png');
+}
+
+function finishFull() {
+  window.cap.done(img.src);
+}
+function finishCrop() {
+  if (!rect) { finishFull(); return; }
+  window.cap.done(cropTo(img.src, rect));
+}
+
+document.getElementById('btn-ok').onclick = finishCrop;
+document.getElementById('btn-full').onclick = () => { rect = null; sel.style.display = 'none'; finishFull(); };
+document.getElementById('btn-cancel').onclick = () => window.cap.cancel();
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') window.cap.cancel();
+  if (e.key === 'Enter') finishCrop();
+});
+// 阻止右键菜单干扰
+document.addEventListener('contextmenu', e => e.preventDefault());
+</script>
+</body>
+</html>

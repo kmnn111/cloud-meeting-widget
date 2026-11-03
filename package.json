@@ -1,0 +1,73 @@
+{
+  "name": "meeting-cloud-widget",
+  "productName": "云上会议",
+  "version": "1.2.1",
+  "description": "Windows桌面 AI会议日历助手：一键识别会议通知，自动记录日历与参会人（Electron）",
+  "main": "main.js",
+  "author": "大软子哥哥",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/kmnn111/cloud-meeting-widget.git"
+  },
+  "scripts": {
+    "start": "electron .",
+    "dist": "node clean-dist.js && electron-builder --win nsis --x64"
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.11",
+    "solarlunar": "^2.0.7"
+  },
+  "devDependencies": {
+    "electron": "^33.0.0",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "cn.cloudmeeting.widget",
+    "productName": "云上会议",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "capture-preload.js",
+      "holidays.js",
+      "renderer/**/*",
+      "node_modules/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "icon.png",
+        "to": "icon.png"
+      }
+    ],
+    "win": {
+      "icon": "icon.png",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "云上会议",
+      "artifactName": "CloudMeeting-Setup-${version}.exe",
+      "allowToChangeInstallationDirectory": false
+    },
+    "publish": [
+      {
+        "provider": "generic",
+        "url": "https://example.com/cloudmeeting/releases"
+      }
+    ]
+  }
+}
