@@ -87,6 +87,95 @@ function sendDockState() {
   if (win && !win.isDestroyed()) win.webContents.send('dock:state', { docked: !!settings.docked, expanded: dockExpanded });
 }
 
+/* ---------------- 桌面部件贴附（对齐天气插件 v1.0.26 #70） ----------------
+   「显示桌面」（Win+D / 任务栏右下角小竖条）对 skipTaskbar 工具窗既不最小化也不发 minimize
+   事件，而是把全屏壁纸 WorkerW 从 z 序底部跃升到普通窗口带顶端盖住一切——非 topmost 窗口
+   必被壁纸盖住（窗口仍"健康"但用户看不见）。
+   ── 桌面部件语义（置顶关时）：小窗钉在「壁纸层」正上方——平时贴 z 序底部（所有程序窗口
+   之下、不挡视线），壁纸跃升时跟着浮到壁纸之上；被点聚焦 / 展开时允许自然置前，失焦 /
+   收起即归位；壁纸可见（桌面态）时强制钉住。
+   ── 置顶开时：topmost('screen-saver') 天然免疫壁纸跃升。大窗态一律按用户置顶偏好走。 */
+let glueTimer = null, glueU32 = null;
+function glueInit() {
+  if (glueU32) return glueU32;
+  try {
+    const koffi = require('koffi');
+    const u = koffi.load('user32.dll');
+    glueU32 = {
+      getDesktop: u.func('void *GetDesktopWindow()'),
+      getWindow: u.func('void *GetWindow(void *h, uint cmd)'),
+      getClassName: u.func('int GetClassNameW(void *h, uint16 *buf, int max)'),
+      getRect: u.func('bool GetWindowRect(void *h, void *rect)'),
+      isVisible: u.func('bool IsWindowVisible(void *h)'),
+      findChild: u.func('void *FindWindowExW(void *p, void *after, str16 cls, str16 name)'),
+      setPos: u.func('bool SetWindowPos(void *h, void *after, int x, int y, int cx, int cy, uint flags)'),
+      isWindow: u.func('bool IsWindow(void *h)')
+    };
+  } catch (e) { glueU32 = null; }
+  return glueU32;
+}
+/* 壁纸层定位：全屏 WorkerW（唯一恒定特征：class=WorkerW、w>1200、h>700）。
+   实测：该窗常态沉在 z 序底（不可见）；explorer「显示桌面」把它「带 SHELLDLL_DefView」跃升
+   到普通窗口带顶端盖一切——注意跃升后它「有」DefView（图标层搬进去了），按无 DefView 过滤
+   会永远找不到跃升层。每 tick 重扫、不缓存句柄（跃升=换位+变形，缓存必失手）；自顶向下扫描、
+   上限 2000。可见者取最靠上（跃升态）；全不可见取最靠下（常态）。 */
+function glueWallpaper() {
+  const A = glueInit(); if (!A) return null;
+  let p = A.getWindow(A.getDesktop(), 5), n = 0; // GW_CHILD：自顶向下
+  const seen = new Set();
+  const nameBuf = Buffer.alloc(256);
+  let visBest = null, hidBest = null;
+  while (p && p !== 0n && n < 2000) {
+    const s = String(p); if (seen.has(s)) break; seen.add(s);
+    const len = A.getClassName(p, nameBuf, 128);
+    if (nameBuf.subarray(0, len * 2).toString('utf16le') === 'WorkerW') {
+      const r = Buffer.alloc(16); A.getRect(p, r);
+      const w = r.readInt32LE(8) - r.readInt32LE(0), h = r.readInt32LE(12) - r.readInt32LE(4);
+      if (w > 1200 && h > 700) {
+        if (A.isVisible(p)) { if (!visBest) visBest = p; } // 第一个可见 = 最靠上（跃升壁纸层）
+        else hidBest = p;                                  // 最后写入 = 最靠下（常态壁纸层）
+      }
+    }
+    p = A.getWindow(p, 2); n++; // GW_HWNDNEXT 向 z 序下方
+  }
+  return visBest || hidBest;
+}
+function glueTick() {
+  const A = glueInit(); if (!A || !win || win.isDestroyed()) return;
+  const W = glueWallpaper(); if (!W) return; // 找不到壁纸层（异形系统）→ 退回自然 z 序，不硬抬
+  const wallUp = A.isVisible(W);
+  // 常态下交互放行（聚焦/展开允许自然置前）；壁纸可见=桌面态必须钉住
+  if (!wallUp && (win.isFocused() || dockExpanded)) return;
+  const hw = win.getNativeWindowHandle().readBigUInt64LE(0);
+  // 目标态：小窗紧贴壁纸层「上方」（其下邻=壁纸层）。
+  // SetWindowPos(A, B) 是把 A 插到 B【下方】——要插壁纸层上方须用「壁纸层的上邻」做锚；
+  // W 已是链顶时上邻为 NULL(=HWND_TOP)，仍在 W 上方。
+  if (A.getWindow(hw, 2) !== W) {
+    const anchor = A.getWindow(W, 3) || 0n;
+    A.setPos(hw, anchor, 0, 0, 0, 0, 0x1B); // SWP_NOSIZE|NOMOVE|NOSENDCHANGING|NOACTIVATE
+  }
+}
+function setGlue(on) {
+  if (on) {
+    if (!glueTimer) glueTimer = setInterval(glueTick, 100);
+    glueTick();
+  } else if (glueTimer) {
+    clearInterval(glueTimer); glueTimer = null;
+  }
+}
+function applyTopmost() {
+  if (!win || win.isDestroyed()) return;
+  try {
+    if (settings.docked && settings.alwaysOnTop) {
+      win.setAlwaysOnTop(true, 'screen-saver'); // 置顶用户：浮最上层，「显示桌面」天然免疫
+      setGlue(false);
+    } else {
+      win.setAlwaysOnTop(!!settings.alwaysOnTop, 'floating');
+      setGlue(!!settings.docked && !settings.alwaysOnTop); // 桌面部件：钉壁纸层上沿
+    }
+  } catch (e) { }
+}
+
 /* ---------------- 悬停展开/收起（对齐天气插件状态机） ---------------- */
 function handleDockHover(inside) {
   if (!win || win.isDestroyed() || !settings.docked) return;
@@ -139,6 +228,7 @@ function dockWindow() {
   setBoundsSafe({ x: px - Math.round((baseSize.w - PILL_W) / 2), y: wa.y, width: baseSize.w, height: baseSize.h });
   setShapePill();
   try { win.setSkipTaskbar(true); } catch (e) { }
+  applyTopmost(); // 桌面部件贴附：钉壁纸层上沿（置顶开时 topmost 免疫壁纸跃升）
   sendDockState();
   ensureHoverPoll();
 }
@@ -154,6 +244,7 @@ function undockWindow() {
   persist(patch);
   setShapeFull();
   try { win.setSkipTaskbar(false); } catch (e) { }
+  applyTopmost(); // 脱离吸顶 → 回归用户置顶偏好（大窗态系统行为不变）
   sendDockState();
   stopHoverPoll();
 }
@@ -185,6 +276,8 @@ function collapseDock() {
 /* 拖拽结束：距顶端够近 → 吸顶收起；吸顶态拖离 → 恢复完整面板 */
 function checkSnap() {
   if (!win || win.isDestroyed()) return;
+  // 最小化时窗口飞到屏外 (-32000)，b.y - wa.y 恒「贴顶」会把最小化误判成吸顶反手 dock
+  if (win.isMinimized()) return;
   if (Date.now() - programmatic < 600) return;
   const b = win.getBounds();
   const wa = screen.getDisplayMatching(b).workArea;
@@ -247,7 +340,25 @@ function createWindow() {
   // 导航防护（Electron 安全基线）：单页本地应用不允许外跳/开窗
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   win.webContents.on('will-navigate', (e) => e.preventDefault());
-  win.setAlwaysOnTop(!!settings.alwaysOnTop, 'floating');
+  applyTopmost();
+  /* 吸顶小窗常驻桌面：系统级最小化（Win+D / Win+M / 任务栏「显示桌面」）是唯一能让本窗
+     最小化的入口（skipTaskbar+无边框没有最小化按钮），故 docked 态拦截 minimize 原地恢复；
+     大窗态保持系统正常行为。恢复用 showInactive 不抢焦点，用户仍停留在桌面；置顶层级/
+     形状在恢复后重申一次（最小化可能掉档）。 */
+  const undoMinimize = () => {
+    if (!win || win.isDestroyed() || !settings.docked) return;
+    if (!win.isMinimized()) return;
+    try { win.showInactive(); } catch (e) { try { win.restore(); } catch (e2) { } }
+    try { win.moveTop(); } catch (e3) { }
+    try { applyTopmost(); } catch (e4) { }
+    if (settings.docked && !dockExpanded) setShapePill();
+  };
+  win.on('minimize', () => {
+    if (!settings.docked) return;
+    setImmediate(undoMinimize);        // 最小化事件后立即拉回
+    setTimeout(undoMinimize, 40);      // 系统最小化动画期间再兜一次（事件时序竞争）
+    setTimeout(undoMinimize, 250);
+  });
   win.setMenuBarVisibility(false);
   win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
   win.once('ready-to-show', () => win.show());
@@ -265,7 +376,7 @@ function createWindow() {
     e.preventDefault();
     dockWindow();                  // 关闭 = 收起回吸顶小窗
   });
-  win.on('closed', () => { win = null; stopHoverPoll(); });
+  win.on('closed', () => { setGlue(false); win = null; stopHoverPoll(); });
 
   // 固定尺寸窗口：任何交互/系统触发的 resize 都是异常，直接拒绝
   win.on('will-resize', (e) => e.preventDefault());
@@ -349,6 +460,54 @@ function createWindow() {
           setTimeout(() => app.exit(0), 300);
         }, 1500);
       }
+      if (process.env.CM_SHOT_GLUE) {
+        // 桌面部件贴附自检：收起为胶囊 → z 序断言（下邻=壁纸 WorkerW）→ 真实「显示桌面」截证
+        setTimeout(async () => {
+          dockWindow();
+          await new Promise(r => setTimeout(r, 900));
+          const A = glueInit();
+          const hw = win.getNativeWindowHandle().readBigUInt64LE(0);
+          const { execSync } = require('child_process');
+          const script = `Add-Type -AssemblyName System.Windows.Forms,System.Drawing
+Add-Type 'using System.Runtime.InteropServices;public class D{[DllImport("user32.dll")]public static extern bool SetProcessDPIAware();}'
+[D]::SetProcessDPIAware() | Out-Null
+$b=[System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+$bmp=New-Object System.Drawing.Bitmap $b.Width,$b.Height
+$g=[System.Drawing.Graphics]::FromImage($bmp)
+$g.CopyFromScreen($b.Location,[System.Drawing.Point]::Empty,$b.Size)
+$bmp.Save('${path.join(__dirname, 'debug-shot-glue.png').replace(/\\/g, '\\\\')}',[System.Drawing.Imaging.ImageFormat]::Png)
+$g.Dispose();$bmp.Dispose()`;
+          execSync('powershell -NoProfile -Command "(New-Object -ComObject Shell.Application).MinimizeAll()"');
+          await new Promise(r => setTimeout(r, 1200));
+          // 断言在「显示桌面」态内做：此时壁纸可见=强制钉住（常态聚焦态允许自然置前，不钉是预期）
+          const W = A && glueWallpaper();
+          const clsOf = (h) => {
+            if (!h || h === 0n) return '(null)';
+            const b = Buffer.alloc(256); const l = A.getClassName(h, b, 128);
+            return b.subarray(0, l * 2).toString('utf16le');
+          };
+          const next = A && A.getWindow(hw, 2);
+          console.log('[main] glue diag:', JSON.stringify({
+            hw: String(hw), next: String(next), nextCls: clsOf(next),
+            W: W ? String(W) : null, wallUp: W ? A.isVisible(W) : null,
+            focused: win.isFocused(), minimized: win.isMinimized()
+          }));
+          const glued = !!(A && W && next === W);
+          if (A && W && !glued) {
+            const ret = A.setPos(hw, A.getWindow(W, 3) || 0n, 0, 0, 0, 0, 0x1B);
+            console.log('[main] manual pin ret:', ret, 'now nextCls:', clsOf(A.getWindow(hw, 2)));
+          }
+          const pinned = !!(A && W && A.getWindow(hw, 2) === W);
+          console.log('[main] glue pin check:', !A ? 'FAIL koffi unavailable'
+            : glued ? 'OK glued-above-wallpaper'
+              : pinned ? 'OK manual-pin-works' : 'FAIL pin failed');
+          execSync('powershell -NoProfile -NonInteractive -EncodedCommand ' + Buffer.from(script, 'utf16le').toString('base64'), { timeout: 8000 });
+          console.log('[main] glue desktop shot saved');
+          execSync('powershell -NoProfile -Command "(New-Object -ComObject Shell.Application).UndoMinimizeAll()"');
+          await new Promise(r => setTimeout(r, 400));
+          setTimeout(() => app.exit(0), 300);
+        }, 1500);
+      }
     });
   }
 }
@@ -391,7 +550,7 @@ function createTray() {
       { label: '收起为吸顶小窗', click: () => dockWindow() },
       { label: '窗口置顶', type: 'checkbox', checked: !!settings.alwaysOnTop, click: (mi) => {
         persist({ alwaysOnTop: mi.checked });
-        if (win && !win.isDestroyed()) win.setAlwaysOnTop(mi.checked, 'floating');
+        applyTopmost();
       } },
       { type: 'separator' },
       { label: '检查更新', click: () => runUpdateCheck() },
@@ -488,7 +647,7 @@ ipcMain.handle('win-show', () => { openMain(); return true; });
 ipcMain.handle('win-min', () => { if (win && !win.isDestroyed()) win.minimize(); });
 ipcMain.handle('set-always-on-top', (e, v) => {
   persist({ alwaysOnTop: !!v });
-  if (win && !win.isDestroyed()) win.setAlwaysOnTop(!!v, 'floating');
+  applyTopmost();
 });
 ipcMain.handle('open-main', () => { openMain(); return true; });
 ipcMain.handle('check-update', () => runUpdateCheck());
@@ -513,7 +672,7 @@ ipcMain.handle('save-settings', (e, incoming) => {
   };
   persist(s);
   try { app.setLoginItemSettings({ openAtLogin: !!s.autoStart }); } catch (err) { }
-  if (win && !win.isDestroyed()) win.setAlwaysOnTop(!!s.alwaysOnTop, 'floating');
+  applyTopmost();
   return true;
 });
 
