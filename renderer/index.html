@@ -147,6 +147,12 @@
         <span id="cf-head-title">AI 识别结果</span>
         <button class="panel-close" data-close="confirm-panel">×</button>
       </div>
+      <!-- 改期识别：命中日历同名会议时显示，勾选后保存会移除旧记录 -->
+      <div id="cf-dup" class="dup-box hidden">
+        <div class="dup-head">⚠ 发现日历中已有同名记录 · 若是改期请勾选移除</div>
+        <div id="cf-dup-list"></div>
+        <div class="hint">勾选 = 保存时删除旧记录、只保留新的日期时间（会议改期）；不勾选 = 作为新的一条添加（周例会等重复会议）</div>
+      </div>
       <label>会议主题</label>
       <input id="cf-title" type="text">
       <div class="cf-row">

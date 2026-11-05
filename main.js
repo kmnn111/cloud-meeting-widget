@@ -46,6 +46,10 @@ const DEFAULT_SETTINGS = {
 const DEFAULT_UPDATE_URL = 'https://github.com/kmnn111/cloud-meeting-widget/releases/latest/download';
 let settings = { ...DEFAULT_SETTINGS };
 
+// 自检模式：重定向 userData，避免测试落盘覆盖真实日历数据
+if (process.env.CM_TEST_DUP) {
+  try { app.setPath('userData', path.join(__dirname, '.test-userdata')); } catch (e) { }
+}
 const dataDir = () => app.getPath('userData');
 const settingsFile = () => path.join(dataDir(), 'settings.json');
 const eventsFile = () => path.join(dataDir(), 'events.json');
@@ -508,6 +512,43 @@ $g.Dispose();$bmp.Dispose()`;
           setTimeout(() => app.exit(0), 300);
         }, 1500);
       }
+      if (process.env.CM_TEST_DUP) {
+        // 改期识别端到端自检：旧会议 + AI 识别改期 → 同名匹配 → 勾选移除 → 只剩新日期
+        setTimeout(async () => {
+          const out = await win.webContents.executeJavaScript(`(async () => {
+            const pad2 = n => String(n).padStart(2, '0');
+            const dOf = off => { const n = new Date(Date.now() + off * 864e5);
+              return n.getFullYear() + '-' + pad2(n.getMonth() + 1) + '-' + pad2(n.getDate()); };
+            // 场景1：具体会议改期 → 旧记录默认勾选移除，只留新日期
+            const dOld = dOf(1), dNew = dOf(3);
+            events = [{ id: 'old1', title: '关于召开项目推进会的通知', date: dOld,
+              start_time: '09:00', end_time: '10:00', location: '一楼会议室', attendees: [], notes: null }];
+            fillConfirm({ title: '项目推进会', date: dNew, start_time: '14:00', end_time: '15:00',
+              location: '二楼', attendees: ['张三'], notes: null });
+            const dupShown = !$('cf-dup').classList.contains('hidden');
+            const checked1 = document.querySelectorAll('#cf-dup-list input:checked').length;
+            await saveMeeting();
+            const kept = events.map(e => e.id + ':' + e.date + ':' + (e.start_time || ''));
+            const s1 = { dupShown, checked: checked1, count: events.length, kept };
+            // 场景2：周例会（过去日期 + 短泛标题）→ 默认不勾选，保存后历史例会保留
+            const dPast = dOf(-2);
+            events = [{ id: 'old2', title: '周例会', date: dPast,
+              start_time: '10:00', end_time: '11:00', location: null, attendees: [], notes: null }];
+            fillConfirm({ title: '周例会', date: dOf(1), start_time: '10:00', end_time: '11:00',
+              location: null, attendees: [], notes: null });
+            const checked2 = document.querySelectorAll('#cf-dup-list input:checked').length;
+            await saveMeeting();
+            const s2 = { checked: checked2, count: events.length, kept: events.map(e => e.id + ':' + e.date) };
+            return JSON.stringify({ s1, s2 });
+          })()`);
+          console.log('[main] dup-reschedule test:', out);
+          const r = JSON.parse(out);
+          const ok1 = r.s1.dupShown && r.s1.checked === 1 && r.s1.count === 1 && r.s1.kept[0].includes(':14:00');
+          const ok2 = r.s2.checked === 0 && r.s2.count === 2 && r.s2.kept.some(k => k.startsWith('old2:'));
+          console.log('[main] dup-reschedule check:', (ok1 && ok2) ? 'OK' : `FAIL (s1=${ok1} s2=${ok2})`);
+          setTimeout(() => app.exit(ok1 && ok2 ? 0 : 1), 300);
+        }, 1500);
+      }
     });
   }
 }
@@ -824,6 +865,7 @@ ipcMain.handle('save-ics', async (e, meeting) => {
   // 默认只在资源管理器中定位文件：shell.openPath 会触发 Windows"始终使用此应用打开 .ics"关联弹窗
   // 用户可在设置里开启"自动打开 .ics"走 openPath（首次仍会弹一次系统关联选择）
   const s = { ...DEFAULT_SETTINGS, ...readJson(settingsFile(), {}) };
+  if (process.env.CM_TEST_DUP) return file;   // 自检模式不弹资源管理器
   if (s.autoOpenIcs) shell.openPath(file);
   else shell.showItemInFolder(file);
   return { ok: true, file };

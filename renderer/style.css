@@ -370,6 +370,29 @@ input[type=range] { width: 100%; accent-color: var(--accent); margin-top: 4px; }
 .cf-row { display: flex; gap: 6px; }
 .cf-row > div { flex: 1; }
 
+/* 改期识别横幅（AI 识别结果中命中同名旧记录） */
+.dup-box {
+  background: rgba(255, 202, 88, 0.16);
+  border: 1px solid rgba(255, 176, 60, 0.42);
+  border-radius: var(--radius-md);
+  padding: 8px 10px 7px;
+  margin-bottom: 9px;
+}
+.dup-head { font-size: 11px; font-weight: 700; color: #9a5b00; margin-bottom: 5px; }
+.dup-row {
+  display: flex; align-items: center; gap: 7px;
+  padding: 4px 2px; cursor: pointer;
+  font-size: 11px; color: var(--ink);
+  border-radius: 8px;
+  transition: background .15s ease;
+}
+.dup-row:hover { background: rgba(255, 255, 255, 0.55); }
+.dup-row input { accent-color: var(--accent); width: 14px; height: 14px; flex: none; cursor: pointer; }
+.dup-info { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.dup-info b { font-weight: 600; }
+.dup-tag { font-size: 9px; color: var(--ink-3); }
+.dup-box .hint { margin-top: 4px; }
+
 /* ---------- 吸顶胶囊小窗（单窗口 setShape 架构） ----------
    窗口尺寸不变，收起/展开靠 CSS 淡入淡出 + 主进程 setShape 裁剪。
    注意：setShape 是矩形裁剪，收起态不能留外投影（会露出方框边）。 */

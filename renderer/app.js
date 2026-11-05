@@ -383,7 +383,9 @@ async function runAI() {
   st.textContent = r.local ? '本地解析完成 · 结果仅供参考，请核对' : '识别完成';
   setTimeout(() => st.classList.add('hidden'), 2600);
   fillConfirm(r.meeting);
-  if (settings.autoWrite) { saveMeeting(); }
+  // 命中同名旧记录（默认勾选了移除）时不自动写入，让用户确认改期替换，避免误删例会
+  const dupRemovals = $('cf-dup-list').querySelectorAll('input:checked').length;
+  if (settings.autoWrite && !dupRemovals) { saveMeeting(); }
   else showPanel('confirm-panel');
 }
 
@@ -451,6 +453,47 @@ function markCfPeopleChecked(names) {
 }
 
 /* ---------------- 确认卡片 / 会议详情 ---------------- */
+// —— 改期识别：与日历已有会议按标题匹配，命中则提示移除旧记录 ——
+function normTitle(t) {
+  return String(t || '').toLowerCase()
+    .replace(/^(关于|召开|组织召开|组织开展|开展)/, '')
+    .replace(/(的通知|通知|的会议|会议通知)$/, '')
+    .replace(/[\s《》〈〉()（）【】\[\]“”"'':：、，,。.·\-—_～~]/g, '');
+}
+const GENERIC_TITLES = ['', '会议', 'null', '会议议题', '例会'];
+function isSameMeeting(a, b) {
+  const x = normTitle(a), y = normTitle(b);
+  if (GENERIC_TITLES.includes(x) || GENERIC_TITLES.includes(y)) return false;
+  if (x === y) return true;
+  return x.length >= 4 && y.length >= 4 && (x.includes(y) || y.includes(x));
+}
+
+function renderDupBox() {
+  const box = $('cf-dup'), list = $('cf-dup-list');
+  const title = $('cf-title').value.trim();
+  const newDate = $('cf-date').value || '';
+  const newStart = $('cf-start').value || '';
+  const todayStr = (() => { const n = new Date(); return fmtDate(n.getFullYear(), n.getMonth() + 1, n.getDate()); })();
+  const matches = events.filter(e => isSameMeeting(e.title, title));
+  if (!matches.length) { box.classList.add('hidden'); list.innerHTML = ''; return; }
+  box.classList.remove('hidden');
+  list.innerHTML = matches.map(e => {
+    const sameDT = e.date === newDate && (e.start_time || '') === newStart;
+    const past = e.date < todayStr;
+    // 默认勾选（视为改期/重复）：完全重复 / 同日改时间 / 未来日期且标题足够具体
+    let check = sameDT || e.date === newDate;
+    if (e.date !== newDate && !past) check = normTitle(e.title).length >= 6;
+    const tag = sameDT ? '重复记录 · 建议移除'
+      : (e.date === newDate ? '同日改时间 · 建议移除'
+        : (past ? '已过去 · 可能是例会，保留' : (check ? '疑似改期 · 建议移除' : '可能为例会，可手动勾选')));
+    const tp = e.start_time ? ' ' + e.start_time + (e.end_time ? '–' + e.end_time : '') : '';
+    return `<label class="dup-row">
+      <input type="checkbox" data-id="${esc(e.id)}" ${check ? 'checked' : ''}>
+      <span class="dup-info"><b>${esc(e.date)}</b>${tp}${e.location ? ' · ' + esc(e.location) : ''}<span class="dup-tag">${tag}</span></span>
+    </label>`;
+  }).join('');
+}
+
 function fillConfirm(m) {
   editingId = null;
   $('cf-head-title').textContent = 'AI 识别结果';
@@ -466,7 +509,15 @@ function fillConfirm(m) {
   const extracted = Array.isArray(m.attendees) ? m.attendees.filter(a => a && a !== 'null') : [];
   renderCfPeople(extracted);
   markCfPeopleChecked(extracted);
+  renderDupBox();
 }
+
+// 确认面板内改动标题/日期/时间时，同步刷新改期匹配（新建模式下）
+['cf-title', 'cf-date', 'cf-start'].forEach(id => {
+  const el = $(id);
+  el.addEventListener('input', () => { if (!editingId) renderDupBox(); });
+  el.addEventListener('change', () => { if (!editingId) renderDupBox(); });
+});
 
 // 点击会议卡片 -> 详情（可修改/删除）
 function openEventDetail(e) {
@@ -483,6 +534,7 @@ function openEventDetail(e) {
   $('cf-notes').value = e.notes || '';
   renderCfPeople(e.attendees || []);
   markCfPeopleChecked(e.attendees || []);
+  $('cf-dup').classList.add('hidden');   // 详情编辑是原地修改，不做改期替换
   showPanel('confirm-panel');
 }
 
@@ -509,10 +561,17 @@ async function saveMeeting() {
     notes: $('cf-notes').value.trim() || null
   };
   if (!meeting.date) { toast('请填写会议日期'); return; }
+  let replaced = 0;
   if (editingId) {
     // 详情编辑：更新原会议，不重复生成 .ics
     events = events.map(x => x.id === editingId ? meeting : x);
   } else {
+    // 改期替换：移除勾选的同名旧记录（旧日期作废），只写入新日期
+    const dupIds = [...$('cf-dup-list').querySelectorAll('input:checked')].map(c => c.dataset.id);
+    if (dupIds.length) {
+      events = events.filter(x => !dupIds.includes(x.id));
+      replaced = dupIds.length;
+    }
     events.push(meeting);
     await window.api.saveIcs(meeting);   // 生成 .ics 并打开，导入系统日历
   }
@@ -533,7 +592,9 @@ async function saveMeeting() {
   const [y, m] = meeting.date.split('-').map(Number);
   viewYear = y; viewMonth = m;
   renderCalendar(); renderEvents();
-  toast(wasEdit ? '修改已保存' : '已写入日历 ✓（.ics 已生成并在文件夹中显示，双击可导入系统日历）');
+  toast(wasEdit ? '修改已保存'
+    : replaced ? `已写入日历 ✓（改期替换：旧记录已移除 ${replaced} 条）`
+    : '已写入日历 ✓（.ics 已生成并在文件夹中显示，双击可导入系统日历）');
 }
 
 /* ---------------- 设置 ---------------- */
