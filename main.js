@@ -512,6 +512,29 @@ $g.Dispose();$bmp.Dispose()`;
           setTimeout(() => app.exit(0), 300);
         }, 1500);
       }
+      if (process.env.CM_TEST_AUTOSTART) {
+        // 开机自启端到端自检（打包态真实注册表读写）
+        setTimeout(async () => {
+          const out = await win.webContents.executeJavaScript(`(async () => {
+            const on = await window.api.setAutoStart(true);
+            const get = await window.api.getAutoStart();
+            await window.api.setAutoStart(false);
+            const off = await window.api.getAutoStart();
+            return JSON.stringify({ setTrue: on, readTrue: get, readFalse: off });
+          })()`);
+          console.log('[main] autostart renderer test:', out);
+          console.log('[main] execPath:', process.execPath);
+          try {
+            app.setLoginItemSettings({ openAtLogin: true, path: process.execPath });
+            console.log('[main] direct set+read:', JSON.stringify(app.getLoginItemSettings()));
+            app.setLoginItemSettings({ openAtLogin: false, path: process.execPath });
+            console.log('[main] after unset:', JSON.stringify(app.getLoginItemSettings()));
+          } catch (e) {
+            console.log('[main] direct set failed:', e.message);
+          }
+          setTimeout(() => app.exit(0), 300);
+        }, 1200);
+      }
       if (process.env.CM_TEST_DUP) {
         // 改期识别端到端自检：旧会议 + AI 识别改期 → 同名匹配 → 勾选移除 → 只剩新日期
         setTimeout(async () => {
@@ -728,7 +751,8 @@ function setAutoStart(on) {
   persist({ autoStart: !!on });
   try {
     if (app.isPackaged) {
-      app.setLoginItemSettings({ openAtLogin: !!on, path: process.execPath, name: '云上会议' });
+      // 注意：不能传 name（macOS 专用），在 Windows 上会导致注册表写不进去、回读 false
+      app.setLoginItemSettings({ openAtLogin: !!on, path: process.execPath });
     }
   } catch (e) { console.error('[autostart] set failed:', e.message); }
   return isAutoStartOn();
