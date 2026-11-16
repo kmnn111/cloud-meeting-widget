@@ -5,6 +5,8 @@ const { holidays, workdays } = require('./holidays');
 contextBridge.exposeInMainWorld('api', {
   loadState: () => ipcRenderer.invoke('load-state'),
   saveSettings: (s) => ipcRenderer.invoke('save-settings', s),
+  getAutoStart: () => ipcRenderer.invoke('get-auto-start'),
+  setAutoStart: (v) => ipcRenderer.invoke('set-auto-start', v),
   saveEvents: (e) => ipcRenderer.invoke('save-events', e),
   savePeople: (p) => ipcRenderer.invoke('save-people', p),
   captureScreen: () => ipcRenderer.invoke('capture-screen-region'),

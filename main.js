@@ -539,14 +539,20 @@ $g.Dispose();$bmp.Dispose()`;
             const checked2 = document.querySelectorAll('#cf-dup-list input:checked').length;
             await saveMeeting();
             const s2 = { checked: checked2, count: events.length, kept: events.map(e => e.id + ':' + e.date) };
-            return JSON.stringify({ s1, s2 });
+            // 场景3：开机自启 IPC 通路（开发态走 settings 分支，不碰注册表）
+            await window.api.setAutoStart(true);
+            const as1 = await window.api.getAutoStart();
+            await window.api.setAutoStart(false);
+            const as2 = await window.api.getAutoStart();
+            return JSON.stringify({ s1, s2, s3: { on: as1, off: as2 } });
           })()`);
           console.log('[main] dup-reschedule test:', out);
           const r = JSON.parse(out);
           const ok1 = r.s1.dupShown && r.s1.checked === 1 && r.s1.count === 1 && r.s1.kept[0].includes(':14:00');
           const ok2 = r.s2.checked === 0 && r.s2.count === 2 && r.s2.kept.some(k => k.startsWith('old2:'));
-          console.log('[main] dup-reschedule check:', (ok1 && ok2) ? 'OK' : `FAIL (s1=${ok1} s2=${ok2})`);
-          setTimeout(() => app.exit(ok1 && ok2 ? 0 : 1), 300);
+          const ok3 = r.s3.on === true && r.s3.off === false;
+          console.log('[main] dup-reschedule check:', (ok1 && ok2 && ok3) ? 'OK' : `FAIL (s1=${ok1} s2=${ok2} s3=${ok3})`);
+          setTimeout(() => app.exit(ok1 && ok2 && ok3 ? 0 : 1), 300);
         }, 1500);
       }
     });
@@ -592,6 +598,10 @@ function createTray() {
       { label: '窗口置顶', type: 'checkbox', checked: !!settings.alwaysOnTop, click: (mi) => {
         persist({ alwaysOnTop: mi.checked });
         applyTopmost();
+      } },
+      { label: '开机自动启动', type: 'checkbox', checked: isAutoStartOn(), click: (mi) => {
+        const real = setAutoStart(mi.checked);
+        if (real !== mi.checked) mi.checked = real;   // 写入失败时菜单态回弹
       } },
       { type: 'separator' },
       { label: '检查更新', click: () => runUpdateCheck() },
@@ -668,12 +678,14 @@ async function runUpdateCheck() {
 }
 
 /* ---------------- 启动 ---------------- */
+// 桌面挂件形态：时钟不停摆（commandLine 开关必须在 app ready 之前追加才生效）
+app.commandLine.appendSwitch('disable-background-timer-throttling');
 app.whenReady().then(() => {
-  // 桌面挂件形态：时钟不停摆
-  app.commandLine.appendSwitch('disable-background-timer-throttling');
   createWindow();               // 单窗口：吸顶胶囊 / 完整面板一体
   if (!settings.apiKey || process.env.CM_DEBUG) openMain();   // 首次使用（未配置模型）打开主面板引导设置
   createTray();
+  // 开机自启自愈：配置声明开启但注册表条目丢失（杀软清理/重装等）时重新写入
+  if (app.isPackaged && settings.autoStart && !isAutoStartOn()) setAutoStart(true);
   initUpdater();
 });
 
@@ -705,6 +717,25 @@ ipcMain.handle('load-state', () => ({
   people: readJson(peopleFile(), [])
 }));
 
+/* ---------------- 开机自启（以注册表真实状态为准） ---------------- */
+function isAutoStartOn() {
+  try {
+    if (!app.isPackaged) return !!settings.autoStart;   // 开发态不碰注册表
+    return !!app.getLoginItemSettings().openAtLogin;
+  } catch (e) { return !!settings.autoStart; }
+}
+function setAutoStart(on) {
+  persist({ autoStart: !!on });
+  try {
+    if (app.isPackaged) {
+      app.setLoginItemSettings({ openAtLogin: !!on, path: process.execPath, name: '云上会议' });
+    }
+  } catch (e) { console.error('[autostart] set failed:', e.message); }
+  return isAutoStartOn();
+}
+ipcMain.handle('get-auto-start', () => isAutoStartOn());
+ipcMain.handle('set-auto-start', (e, on) => setAutoStart(!!on));
+
 ipcMain.handle('save-settings', (e, incoming) => {
   // 渲染层传来的配置合并时保留主进程维护的窗口几何状态（docked/dockX/winPos）
   const s = {
@@ -712,7 +743,7 @@ ipcMain.handle('save-settings', (e, incoming) => {
     docked: settings.docked, dockX: settings.dockX, winPos: settings.winPos
   };
   persist(s);
-  try { app.setLoginItemSettings({ openAtLogin: !!s.autoStart }); } catch (err) { }
+  setAutoStart(!!s.autoStart);
   applyTopmost();
   return true;
 });
@@ -759,7 +790,8 @@ ipcMain.handle('ai-extract', async (e, { text, imageDataUrl, settings: s }) => {
 1. 相对日期（今天/明天/下周三等）以今天为基准推算；
 2. 只有日期没有时间时，start_time 填 null；若原文只有“上午/下午/晚上”等模糊时段而无具体时分，start_time 填 null 并把该时段写入 notes；
 3. attendees 提取通知中出现的参会人姓名或称谓，提取不到给空数组；
-4. 严禁编造原文没有的信息，无法确定的字段填 null。`;
+4. title 必须是完整会议名称，要带主办单位/机构名做前缀——如「市公安局第X次党委会议」，不要只写「第X次党委会议」；单位名从通知抬头、落款、发文机关或行文主语（如「XX局党委定于…」「XX公司办公室」）判断；原文确实找不到单位名才不加；
+5. 严禁编造原文没有的信息，无法确定的字段填 null。`;
   const temp = Math.min(0.9, Math.max(0.1, Number(s.style) || 0.2));
   const userContent = imageDataUrl
     ? [{ type: 'text', text: text || '请从这张图片中提取会议信息' },

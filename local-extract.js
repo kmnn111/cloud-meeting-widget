@@ -109,6 +109,10 @@ function parseTitle(text, lines) {
       .replace(/[：:，,。]+$/, '')
       .trim();
     t = stripLead(t); // 先剥日期/时间，避免"9:00-11:30"里的冒号干扰分段
+    // 剥句中"关于…召开"中缀："市公安局关于召开第X次党委会议" → "市公安局第X次党委会议"
+    t = t.replace(/关于\s*(召开|举办|举行|组织)?/g, '');
+    // 剥句中动词中缀："局党委定于11月26日召开第X次党委会议" → "局党委第X次党委会议"
+    t = t.replace(/(定于|决定于|拟于|将于|兹定于)[^，,。；;：:]{0,24}?(召开|举行|组织|举办)/, '');
     const seg = t.split(/[，,。；;：:]/).find(p => key.test(p) && p.length >= 3) || t;
     const c = seg.trim();
     if (c.length >= 2 && !generic.test(c)) cands.push(c.slice(0, 40));
@@ -130,7 +134,7 @@ function parseTitle(text, lines) {
 function parseLocation(text) {
   // 去掉"在/位于/于"前缀："在501会议室" → "501会议室"
   const strip = s => s.replace(/^[在于位于]+/, '').trim();
-  let m = text.match(/(?:地点|会议地点|会场|地址)\s*[：:]\s*([^\s，,。；;]{2,30})/);
+  let m = text.match(/(?:地点|会议地点|会场|地址)\s*[：:]?\s*[位于在]?\s*([^\s，,。；;]{2,30})/);
   if (m) return strip(m[1]);
   m = text.match(/(?:位于|在)\s*([^\s，,。；;]{2,20}?(?:会议室|会议厅|大厅|报告厅|中心|大楼|会议室\d+|楼|党校|酒店))\s*(?:召开|举行|进行|开)/);
   if (m) return strip(m[1]);
@@ -158,6 +162,36 @@ function parseAttendees(text) {
   return [...new Set(names)].slice(0, 12);
 }
 
+// 主办单位识别：从发文机关/行文主语/落款中找机构名，用于补全标题前缀
+function parseOrg(text, lines) {
+  const tail = '(?:党委|党支部|党总支|团委|工会|办公室|公安厅|公安局|公安分局|法院|检察院|教育局|卫健委|有限责任公司|公司|集团|学校|中学|小学|医院|学院|中心|大队|支队|局|委|办|署|厅|所|部)';
+  const clean = s => s.replace(/^由/, '');   // "由办公室组织召开" → "办公室"
+  // 1) 标题式发文机关："XX局关于召开…的通知"
+  let m = text.match(new RegExp('([\\u4e00-\\u9fa5]{2,12}?' + tail + ')(?=关于)'));
+  if (m) return clean(m[1]);
+  // 2) 行文主语："XX局党委定于/决定/将于…召开"
+  m = text.match(new RegExp('([\\u4e00-\\u9fa5]{2,12}?' + tail + ')(?=定于|决定|拟于|将于|兹定于|牵头|组织|举办|召开|举行)'));
+  if (m) return clean(m[1]);
+  // 3) 落款行：文末整行是机构名
+  const orgLine = new RegExp('^[\\u4e00-\\u9fa5（）()]{2,16}' + tail + '$');
+  for (let i = lines.length - 1; i >= 0 && i >= lines.length - 3; i--) {
+    const s = lines[i].trim();
+    if (orgLine.test(s)) return clean(s);
+  }
+  return null;
+}
+
+// 标题补单位名："第X次党委会议" + "市公安局党委" → "市公安局第X次党委会议"
+function withOrg(org, title) {
+  if (!org || !title) return title;
+  if (title.includes(org) || org.includes(title)) return title;
+  let o = org;
+  const tailWord = /(党委|党支部|党总支|团委|工会|办公室)$/;
+  const tw = o.match(tailWord);
+  if (tw && title.includes(tw[1]) && o.replace(tailWord, '').length >= 2) o = o.replace(tailWord, '');
+  return o + title;
+}
+
 function localExtract(text, now = new Date()) {
   const clean = String(text || '').replace(/\r/g, '');
   const lines = clean.split('\n').filter(l => l.trim());
@@ -169,7 +203,7 @@ function localExtract(text, now = new Date()) {
   const m = text.match(/(?:备注|说明|注)\s*[：:]\s*([^\n]{2,60})/);
   if (m) notes.push(m[1].trim());
   return {
-    title: parseTitle(whole, lines),
+    title: withOrg(parseOrg(whole, lines), parseTitle(whole, lines)),
     date: parseDate(whole, now),
     start_time: t.start_time,
     end_time: t.end_time,

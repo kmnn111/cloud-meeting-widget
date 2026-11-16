@@ -50,6 +50,7 @@ function hasOfficialData(year) {
 
 /* ---------------- 吸顶胶囊（单窗口 setShape 架构） ---------------- */
 function renderPill() {
+  if (document.hidden) return;   // 窗口隐藏时跳过刷新，省 CPU
   const n = new Date();
   $('pill-time').textContent = `${pad2(n.getHours())}:${pad2(n.getMinutes())}`;
   $('pill-sec').textContent = pad2(n.getSeconds());
@@ -294,6 +295,13 @@ function bindGlobal() {
     k.type = k.type === 'password' ? 'text' : 'password';
   };
   $('btn-save-settings').onclick = saveSettings;
+  // 开机自启即时生效：切换即写注册表，不等「保存」
+  $('set-autostart').addEventListener('change', async () => {
+    const on = $('set-autostart').checked;
+    const real = await window.api.setAutoStart(on);
+    $('set-autostart').checked = !!real;
+    toast(real ? '已开启开机自动启动 ✓' : '已关闭开机自动启动');
+  });
   $('btn-test').onclick = testConnection;
   $('btn-check-update').onclick = async () => {
     const r = $('test-result');
@@ -507,6 +515,7 @@ function fillConfirm(m) {
   $('cf-location').value = m.location && m.location !== 'null' ? m.location : '';
   $('cf-notes').value = m.notes && m.notes !== 'null' ? m.notes : '';
   const extracted = Array.isArray(m.attendees) ? m.attendees.filter(a => a && a !== 'null') : [];
+  $('cf-people').innerHTML = '';   // 清掉上次识别/详情残留的人员 chips
   renderCfPeople(extracted);
   markCfPeopleChecked(extracted);
   renderDupBox();
@@ -532,6 +541,7 @@ function openEventDetail(e) {
   $('cf-end').value = e.end_time || '';
   $('cf-location').value = e.location || '';
   $('cf-notes').value = e.notes || '';
+  $('cf-people').innerHTML = '';   // 清掉上次残留的人员 chips
   renderCfPeople(e.attendees || []);
   markCfPeopleChecked(e.attendees || []);
   $('cf-dup').classList.add('hidden');   // 详情编辑是原地修改，不做改期替换
@@ -608,6 +618,15 @@ function fillSettings() {
   $('set-autostart').checked = !!settings.autoStart;
   $('set-alwaysontop').checked = !!settings.alwaysOnTop;
   $('set-updateurl').value = settings.updateUrl || '';
+  refreshAutoStart();   // 以系统注册表真实状态为准显示开关
+}
+
+// 开机自启：勾选框显示的是系统真实状态（注册表），而非配置文件里的记录值
+async function refreshAutoStart() {
+  try {
+    const real = await window.api.getAutoStart();
+    $('set-autostart').checked = !!real;
+  } catch (e) { /* 保底用 settings.autoStart */ }
 }
 
 async function saveSettings() {
@@ -635,6 +654,10 @@ async function testConnection() {
     apiKey: $('set-apikey').value.trim()
   };
   const r = $('test-result');
+  if (!s.baseUrl || !s.apiKey) {
+    r.textContent = '请先填写接口地址和 API Key 再测试';
+    return;
+  }
   r.textContent = '正在测试…';
   const res = await window.api.testConnection(s);
   r.textContent = res.ok ? `连接成功 ✓ 模型回复：${res.reply}` : `连接失败：${res.error}`;
@@ -648,6 +671,7 @@ function showPanel(id) {
 }
 function hideOverlay() {
   $('overlay').classList.add('hidden');
+  editingId = null;   // 关闭面板即退出详情编辑态，防止下次保存误走「更新原会议」
   window.api.setHoverLock(false);
 }
 let toastTimer = null;
