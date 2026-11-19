@@ -63,6 +63,36 @@ try {
   console.warn('[verify-pack] 无法列出 asar 内容（跳过硬校验）:', e.message);
 }
 
+// 2.5) HTML 里引用的本地脚本/样式也必须进包
+//      （v1.3.3 教训：capture.html 的内联脚本被 CSP 拒绝执行、整页黑屏退不出去；
+//        拆成外部 capture.js 后，若该文件漏打包会重演同样的黑屏）
+const htmlRefs = new Map();   // 相对包根路径 -> 引用它的 html
+const rendererDir = path.join(root, 'renderer');
+for (const f of fs.readdirSync(rendererDir).filter(x => x.endsWith('.html'))) {
+  const src = fs.readFileSync(path.join(rendererDir, f), 'utf8');
+  const re = /<(?:script|link)[^>]+?(?:src|href)\s*=\s*["']([^"']+)["']/gi;
+  let m;
+  while ((m = re.exec(src))) {
+    const ref = m[1];
+    if (/^(https?:|data:|\/\/)/i.test(ref)) continue;   // 外链/内联数据跳过
+    const rel = path.posix.normalize('renderer/' + ref.replace(/^\.\//, ''));
+    htmlRefs.set(rel, f);
+  }
+}
+if (htmlRefs.size) {
+  console.log('[verify-pack] 检查 HTML 引用的本地资源：');
+  for (const [rel, from] of htmlRefs) {
+    if (!fs.existsSync(path.join(root, rel))) {
+      fail(`${rel} 被 ${from} 引用，但源文件不存在`);
+      continue;
+    }
+    if (!listing) { ok(`${rel} 存在（跳过 asar 校验）`); continue; }
+    const present = listing.split(/\r?\n/).some(l => l.replace(/^[\\/]+/, '').replace(/\\/g, '/') === rel);
+    if (present) ok(`${rel} 已在 asar 内`);
+    else fail(`${rel} 被 ${from} 引用，但不在 asar 内（运行时会加载失败）`);
+  }
+}
+
 if (listing) {
   console.log('[verify-pack] 检查 asar 实际内容：');
   const mustHave = ['main.js', 'preload.js', ...localReqs.keys()];
@@ -87,6 +117,24 @@ try {
   ok('preload.js 语法可解析');
 } catch (e) {
   fail('preload.js 无法解析: ' + e.message);
+}
+
+// 4.5) HTML 内联脚本与 CSP 的兼容性
+//      事故复盘（v1.3.3）：capture.html 用了内联 <script>，但 CSP 是 default-src 'self'
+//      未放行 inline → 整块脚本被浏览器拒绝执行 → 截图遮罩黑屏、Esc/按钮全部失效、退不出去。
+//      这里静态拦死：任何 html 若有内联 script，其 CSP 必须显式允许 unsafe-inline 或含 nonce/hash。
+console.log('[verify-pack] 检查 HTML 内联脚本与 CSP 是否冲突：');
+for (const f of fs.readdirSync(rendererDir).filter(x => x.endsWith('.html'))) {
+  const src = fs.readFileSync(path.join(rendererDir, f), 'utf8');
+  // 去掉 <script src=...> 这类外链，只找还有内容的脚本块
+  const inlineBlocks = src.match(/<script(?![^>]*\bsrc=)[^>]*>[\s\S]*?<\/script>/gi) || [];
+  const hasInline = inlineBlocks.some(b => b.replace(/<[^>]+>/g, '').trim().length > 0);
+  if (!hasInline) { ok(`${f} 无内联脚本（安全）`); continue; }
+  const cspMatch = src.match(/Content-Security-Policy["'][^>]*content=["']([^"']+)["']/i);
+  const csp = cspMatch ? cspMatch[1] : '';
+  const allowsInline = /'unsafe-inline'/.test(csp) || /'nonce-/.test(csp) || /'sha256-/.test(csp);
+  if (allowsInline) ok(`${f} 有内联脚本，CSP 已放行`);
+  else fail(`${f} 含内联脚本但 CSP 不允许（运行时脚本会被拒绝执行 → 界面失效/黑屏）`);
 }
 
 if (failed) {

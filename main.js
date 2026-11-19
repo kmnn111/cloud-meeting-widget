@@ -439,7 +439,7 @@ function createWindow() {
       if (process.env.CM_SHOT) {
         setTimeout(async () => {
           const img = await win.webContents.capturePage();
-          fs.writeFileSync(path.join(__dirname, 'debug-shot.png'), img.toPNG());
+          fs.writeFileSync(path.join(app.getPath('temp'), 'cm-debug-shot.png'), img.toPNG());
           console.log('[main] shot saved');
           setTimeout(() => app.exit(0), 300);
         }, 1500);
@@ -487,12 +487,12 @@ function createWindow() {
           })()`);
           console.log('[main] pill overflow test:', fit);
           let img = await win.webContents.capturePage({ x: 0, y: 0, width: 400, height: 100 });
-          fs.writeFileSync(path.join(__dirname, 'debug-shot-dock.png'), img.toPNG());
+          fs.writeFileSync(path.join(app.getPath('temp'), 'cm-debug-dock.png'), img.toPNG());
           console.log('[main] dock shot saved');
           expandDock();
           await new Promise(r => setTimeout(r, 900));
           img = await win.webContents.capturePage();
-          fs.writeFileSync(path.join(__dirname, 'debug-shot-expand.png'), img.toPNG());
+          fs.writeFileSync(path.join(app.getPath('temp'), 'cm-debug-expand.png'), img.toPNG());
           console.log('[main] expand shot saved');
           const r = JSON.parse(fit);
           const ok = !r.clipped && r.lines <= 2 && !r.overflowX;
@@ -501,13 +501,36 @@ function createWindow() {
         }, 1500);
       }
       if (process.env.CM_SHOT_CAPTURE) {
-        // 端到端自检：自动跑通"抓屏→预览文件→遮罩→选区→主进程裁剪→回传"全链路
+        // 端到端自检：不仅要走通链路，还要验证「截到的画面不是全黑」——这是真实病症
         setTimeout(async () => {
           console.log('[main] capture pipeline test start');
           const p = win.webContents.executeJavaScript('window.api.captureScreen()');
           await new Promise(r => setTimeout(r, 2500));
           const overlay = BrowserWindow.getAllWindows().find(w => w !== win && !w.isDestroyed());
+          let overlayDiag = null;
           if (overlay) {
+            // 先看病灶：遮罩窗的 preload 是否挂上、预览图是否真的加载了
+            overlayDiag = await overlay.webContents.executeJavaScript(`(async () => {
+              const el = document.getElementById('shot');
+              // 等图片真正解码完成（最多 3 秒），避免把「还没加载完」误判成黑屏
+              if (el && (!el.complete || el.naturalWidth === 0)) {
+                await new Promise(res => {
+                  const done = () => res();
+                  el.addEventListener('load', done, { once: true });
+                  el.addEventListener('error', done, { once: true });
+                  setTimeout(done, 3000);
+                });
+              }
+              return JSON.stringify({
+                hasCap: typeof window.cap,
+                imgSrcLen: (el && el.src || '').length,
+                naturalW: el ? el.naturalWidth : -1,
+                complete: el ? el.complete : null,
+                tipText: (document.getElementById('tip') || {}).textContent || '',
+                focused: document.hasFocus()
+              });
+            })()`).catch(e => 'ERR:' + e.message);
+            console.log('[main] overlay diag:', overlayDiag);
             await overlay.webContents.executeJavaScript('window.cap.done({x:100,y:100,w:300,h:200})');
           } else {
             console.log('[main] capture pipeline FAIL: overlay not found');
@@ -515,12 +538,69 @@ function createWindow() {
           const dataUrl = await p;
           if (dataUrl && dataUrl.startsWith('data:image')) {
             const img = nativeImage.createFromDataURL(dataUrl);
-            fs.writeFileSync(path.join(__dirname, 'debug-shot-capture.png'), img.toPNG());
-            console.log('[main] capture pipeline OK', JSON.stringify(img.getSize()));
-          } else {
-            console.log('[main] capture pipeline FAIL, result =', dataUrl);
+            const { width, height } = img.getSize();
+            // 关键断言：抽样统计像素，全黑即判定抓屏失败（Windows desktopCapturer 常见故障）
+            const bmp = img.toBitmap();   // BGRA
+            let nonBlack = 0, total = 0;
+            for (let i = 0; i < bmp.length; i += 4 * 97) {
+              total++;
+              if (bmp[i] > 12 || bmp[i + 1] > 12 || bmp[i + 2] > 12) nonBlack++;
+            }
+            const ratio = total ? nonBlack / total : 0;
+            // 自检产物写临时目录：打包后 __dirname 在 asar 内，不可写（v1.3.3 打包验收发现的坑）
+            const shotFile = path.join(app.getPath('temp'), 'cm-debug-shot-capture.png');
+            try { fs.writeFileSync(shotFile, img.toPNG()); } catch (e) {
+              console.error('[main] debug shot write failed:', e.message);
+            }
+            console.log('[main] capture pixel check:', JSON.stringify({
+              width, height, sampled: total, nonBlackRatio: +ratio.toFixed(3)
+            }));
+            // 遮罩层健康断言：脚本跑起来（window.cap 存在）+ 预览图真的解码成功。
+            // 这条正是 v1.3.3 的病根：CSP 拒绝内联脚本 → window.cap 缺失 → 遮罩黑屏且无法退出。
+            const ov = JSON.parse(overlayDiag || '{}');
+            const overlayOk = ov.hasCap === 'object' && ov.naturalW > 0;
+            const ok = ratio > 0.05 && overlayOk;
+            console.log('[main] capture pipeline', ok ? 'OK'
+              : `FAIL (非黑像素=${ratio.toFixed(3)}, 遮罩层=${overlayOk ? 'ok' : ov.hasCap + '/' + ov.naturalW})`);
+            setTimeout(() => app.exit(ok ? 0 : 1), 300);
+            return;
           }
-          setTimeout(() => app.exit(0), 300);
+          console.log('[main] capture pipeline FAIL, result =', dataUrl);
+          setTimeout(() => app.exit(1), 300);
+        }, 1500);
+      }
+      if (process.env.CM_TEST_ESC) {
+        // 「能不能退出去」自检（v1.3.3 用户真实痛点是退不出）：
+        // 开截图 → 用 Esc 键退出 → 验证遮罩窗已销毁、Promise 已 resolve、主窗恢复可见
+        setTimeout(async () => {
+          const p = win.webContents.executeJavaScript('window.api.captureScreen()');
+          await new Promise(r => setTimeout(r, 2500));
+          const overlay = BrowserWindow.getAllWindows().find(w => w !== win && !w.isDestroyed());
+          if (!overlay) {
+            console.log('[main] esc-exit check: FAIL overlay not created');
+            setTimeout(() => app.exit(1), 300);
+            return;
+          }
+          // 模拟真实按键：发到遮罩窗 webContents，走页面 keydown 与 before-input-event 双路径
+          // 注意：keyDown 一旦触发 finish，遮罩窗会同步销毁，后续事件必须判存活
+          const send = (type) => {
+            if (!overlay || overlay.isDestroyed() || overlay.webContents.isDestroyed()) return false;
+            try { overlay.webContents.sendInputEvent({ type, keyCode: 'Escape' }); return true; }
+            catch (e) { return false; }
+          };
+          send('keyDown');
+          send('keyUp');
+          const result = await Promise.race([
+            p.then(v => ({ resolved: true, value: v === null ? 'null' : String(v).slice(0, 20) })),
+            new Promise(r => setTimeout(() => r({ resolved: false }), 4000))
+          ]);
+          await new Promise(r => setTimeout(r, 400));
+          const overlayGone = !BrowserWindow.getAllWindows().some(w => w !== win && !w.isDestroyed());
+          const mainVisible = win.isVisible();
+          const ok = result.resolved && overlayGone && mainVisible;
+          console.log('[main] esc-exit check:', JSON.stringify({ ...result, overlayGone, mainVisible }));
+          console.log('[main] esc-exit', ok ? 'OK' : 'FAIL');
+          setTimeout(() => app.exit(ok ? 0 : 1), 300);
         }, 1500);
       }
       if (process.env.CM_SHOT_GLUE) {
@@ -538,7 +618,7 @@ $b=[System.Windows.Forms.Screen]::PrimaryScreen.Bounds
 $bmp=New-Object System.Drawing.Bitmap $b.Width,$b.Height
 $g=[System.Drawing.Graphics]::FromImage($bmp)
 $g.CopyFromScreen($b.Location,[System.Drawing.Point]::Empty,$b.Size)
-$bmp.Save('${path.join(__dirname, 'debug-shot-glue.png').replace(/\\/g, '\\\\')}',[System.Drawing.Imaging.ImageFormat]::Png)
+$bmp.Save('${path.join(app.getPath('temp'), 'cm-debug-glue.png').replace(/\\/g, '\\\\')}',[System.Drawing.Imaging.ImageFormat]::Png)
 $g.Dispose();$bmp.Dispose()`;
           execSync('powershell -NoProfile -Command "(New-Object -ComObject Shell.Application).MinimizeAll()"');
           await new Promise(r => setTimeout(r, 1200));
@@ -1157,9 +1237,25 @@ ipcMain.handle('capture-screen-region', async () => {
       }
     });
     overlay.setAlwaysOnTop(true, 'screen-saver');
+    // 诊所：遮罩窗内的脚本/资源错误必须可见，否则黑屏了也查不到原因
+    overlay.webContents.on('console-message', (_e, level, msg, line, src) => {
+      if (level >= 2 || process.env.CM_DEBUG) {
+        console.error('[capture] console:', level, msg, '@', String(src).split(/[\\/]/).pop() + ':' + line);
+      }
+    });
+    overlay.webContents.on('preload-error', (_e, p, err) => {
+      console.error('[capture] preload-error:', p, err && err.message);
+    });
+    overlay.webContents.on('did-fail-load', (_e, code, desc) => {
+      console.error('[capture] did-fail-load:', code, desc);
+    });
+    // 防止遮罩窗变成"卡死全屏"：无论何种原因被关闭/崩溃，都立即收场
+    overlay.on('closed', () => finishRef && finishRef(null));
+    overlay.webContents.on('render-process-gone', () => finishRef && finishRef(null));
     overlay.loadFile(path.join(__dirname, 'renderer', 'capture.html'));
 
     let settled = false;
+    let finishRef = null;
     const finish = (dataUrl) => {
       if (settled) return;
       settled = true;
@@ -1172,6 +1268,7 @@ ipcMain.handle('capture-screen-region', async () => {
       if (wasVisible && win && !win.isDestroyed()) win.show();
       resolve(dataUrl);
     };
+    finishRef = finish;   // 供 closed / 崩溃兜底调用（避免黑屏卡死退不出去）
     // 就绪握手：遮罩窗脚本注册完监听后主动来要预览路径
     const onReady = (e) => {
       if (e.sender !== overlay.webContents) return;
@@ -1201,7 +1298,15 @@ ipcMain.handle('capture-screen-region', async () => {
     ipcMain.on('cap-ready', onReady);
     ipcMain.on('crop-done', onDone);
     ipcMain.on('crop-cancel', onCancel);
-    // 兜底：任何情况下不把用户卡在黑屏（异常/消息丢失 120 秒后自动恢复）
-    const safety = setTimeout(() => finish(null), 120000);
+    // 全局 Esc 兜底：即便遮罩窗的键盘事件没生效（焦点异常），也能退出。
+    // 遮罩窗常驻焦点时页面内脚本已处理 Esc，这里只是双保险（重复触发被 settled 拦掉）。
+    const escHook = (_e, input) => {
+      if (!overlay || overlay.isDestroyed() || overlay.webContents.isDestroyed()) return;
+      const isEsc = input && input.type === 'keyDown' && (input.key === 'Escape' || input.keyCode === 'Escape');
+      if (isEsc) finish(null);
+    };
+    try { overlay.webContents.on('before-input-event', escHook); } catch (e) { }
+    // 兜底：任何情况下不把用户卡在黑屏（异常/消息丢失 60 秒后自动恢复）
+    const safety = setTimeout(() => finish(null), 60000);
   });
 });
