@@ -47,7 +47,7 @@ const DEFAULT_UPDATE_URL = 'https://github.com/kmnn111/cloud-meeting-widget/rele
 let settings = { ...DEFAULT_SETTINGS };
 
 // 自检模式：重定向 userData，避免测试落盘覆盖真实日历数据
-if (process.env.CM_TEST_DUP || process.env.CM_TEST_UI) {
+if (process.env.CM_TEST_DUP || process.env.CM_TEST_UI || process.env.CM_TEST_EXPAND) {
   try { app.setPath('userData', path.join(__dirname, '.test-userdata')); } catch (e) { }
 }
 const dataDir = () => app.getPath('userData');
@@ -366,8 +366,23 @@ function createWindow() {
   win.setMenuBarVisibility(false);
   win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
   win.once('ready-to-show', () => win.show());
+  // preload 加载失败 = window.api 缺失 = 整窗白屏。捕获后放开窗口形状（避免错误提示被
+  // 胶囊裁剪吃掉），并留下日志，便于定位是哪个模块没打进包。
+  win.webContents.on('preload-error', (_e, preloadPath, err) => {
+    console.error('[main] preload-error:', preloadPath, err && err.message);
+    try { setShapeFull(); } catch (e2) { }
+    if (settings.docked) undockWindow();
+  });
   win.webContents.on('did-finish-load', () => {
     sendDockState();
+    // 兜底自检：桥梁没挂上（老包/打包漏文件）→ 解除吸顶，让页面里的错误提示完整可见
+    win.webContents.executeJavaScript('typeof window.api').then(t => {
+      if (t === 'undefined') {
+        console.error('[main] window.api missing — preload failed, undocking for visible error');
+        try { setShapeFull(); } catch (e) { }
+        if (settings.docked) undockWindow();
+      }
+    }).catch(() => { });
     if (settings.docked) setShapePill();
   });
 
@@ -510,6 +525,41 @@ $g.Dispose();$bmp.Dispose()`;
           execSync('powershell -NoProfile -Command "(New-Object -ComObject Shell.Application).UndoMinimizeAll()"');
           await new Promise(r => setTimeout(r, 400));
           setTimeout(() => app.exit(0), 300);
+        }, 1500);
+      }
+      if (process.env.CM_TEST_EXPAND) {
+        // 回归自检（v1.3.1 事故防复发）：preload 挂载成功 + 展开态大窗内容完整
+        // 事故链：打包漏 history-data.js → preload 抛错 → window.api 缺失 → init 中断
+        //        → body 无 docked/expanded → 日历空白 + 主进程仍按胶囊裁剪 → 只剩一条窄玻璃
+        setTimeout(async () => {
+          const out = await win.webContents.executeJavaScript(`JSON.stringify({
+            api: typeof window.api,
+            histEntry: (() => { try { return !!window.api.getTodayEntry(new Date().toISOString(), null); } catch (e) { return false; } })(),
+            calCells: $('cal-grid').children.length,
+            dayTitle: $('day-title').textContent.trim(),
+            bodyCls: document.body.className
+          })`);
+          const r = JSON.parse(out);
+          dockWindow();
+          await new Promise(res => setTimeout(res, 700));
+          const dockedCls = await win.webContents.executeJavaScript('document.body.className');
+          expandDock();
+          await new Promise(res => setTimeout(res, 700));
+          const exp = JSON.parse(await win.webContents.executeJavaScript(`JSON.stringify({
+            cls: document.body.className,
+            shellVis: getComputedStyle($('shell')).visibility,
+            pillDisplay: getComputedStyle($('pill')).display,
+            innerW: innerWidth, innerH: innerHeight
+          })`));
+          const b = win.getBounds();
+          const ok = r.api === 'object' && r.histEntry && r.calCells >= 28
+            && dockedCls.includes('docked')
+            && exp.cls.includes('expanded') && exp.shellVis === 'visible'
+            && exp.pillDisplay === 'none'
+            && b.width === baseSize.w && b.height === baseSize.h;
+          console.log('[main] expand test:', JSON.stringify({ r, dockedCls, exp, bounds: b }));
+          console.log('[main] expand check:', ok ? 'OK' : 'FAIL');
+          setTimeout(() => app.exit(ok ? 0 : 1), 300);
         }, 1500);
       }
       if (process.env.CM_TEST_AUTOSTART) {

@@ -13,8 +13,8 @@ const pad2 = n => String(n).padStart(2, '0');
 const fmtDate = (y, m, d) => `${y}-${pad2(m)}-${pad2(d)}`;
 
 // 官方节假日 / 调休映射（preload 注入）
-const HOLIDAYS = window.api.holidaysData?.holidays || {};
-const WORKDAYS = window.api.holidaysData?.workdays || {};
+const HOLIDAYS = window.api?.holidaysData?.holidays || {};
+const WORKDAYS = window.api?.holidaysData?.workdays || {};
 
 // 农历节日兜底
 const LUNAR_FEST = {
@@ -33,9 +33,22 @@ function hasOfficialData(year) {
 
 /* ---------------- 初始化 ---------------- */
 (async function init() {
-  const state = await window.api.loadState();
-  settings = state.settings;
-  events = state.events;
+  // 桥梁缺失（preload 加载失败）时不能静默白屏：给出可见错误，便于用户反馈
+  if (!window.api) {
+    document.body.innerHTML = '<div style="padding:32px 24px;font:14px/1.7 system-ui;color:#1c2733">'
+      + '<b>程序组件加载失败</b><br>请退出后重新安装云上会议。'
+      + '<br><span style="font-size:12px;color:#8fa1b2">如反复出现，请把这条信息反馈给开发者。</span></div>';
+    return;
+  }
+  let state;
+  try { state = await window.api.loadState(); }
+  catch (e) {
+    // 数据读取异常：用空状态继续渲染，保证日历与界面可用（绝不整窗空白）
+    console.error('[app] loadState failed:', e);
+    state = { settings: {}, events: [], people: [] };
+  }
+  settings = state.settings || {};
+  events = state.events || [];
   people = state.people || [];
   const now = new Date();
   viewYear = now.getFullYear();

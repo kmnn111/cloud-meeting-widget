@@ -1,7 +1,13 @@
 const { contextBridge, ipcRenderer } = require('electron');
-const solarlunar = require('solarlunar');
-const { holidays, workdays } = require('./holidays');
-const historyData = require('./history-data');
+// 可选模块按需加载：任一模块缺失（例如打包 files 白名单漏配）只降级对应功能，
+// 绝不能因为一个 require 失败就让整个 window.api 消失、应用变成白屏。
+let solarlunar = null, holidays = {}, workdays = {}, historyData = null;
+try { solarlunar = require('solarlunar'); } catch (e) { console.error('[preload] solarlunar missing:', e.message); }
+try { ({ holidays, workdays } = require('./holidays')); } catch (e) { console.error('[preload] holidays missing:', e.message); }
+try { historyData = require('./history-data'); } catch (e) { console.error('[preload] history-data missing:', e.message); }
+
+// 历史条目兜底：数据模块缺失时给一条通用文案，小窗不至于空白
+const FALLBACK_HISTORY = { title: '历史上的今天 · 铭记来时路', year: '', source: 'fallback' };
 
 contextBridge.exposeInMainWorld('api', {
   loadState: () => ipcRenderer.invoke('load-state'),
@@ -28,9 +34,16 @@ contextBridge.exposeInMainWorld('api', {
   checkUpdate: () => ipcRenderer.invoke('check-update'),
   onUpdateStatus: (cb) => ipcRenderer.on('update-status', (e, msg) => cb(msg)),
   getHistoryToday: () => ipcRenderer.invoke('get-history-today'),
-  getTodayEntry: (iso, online) => historyData.getToday(iso ? new Date(iso) : new Date(), online || null),
+  getTodayEntry: (iso, online) => {
+    if (!historyData) return FALLBACK_HISTORY;
+    try { return historyData.getToday(iso ? new Date(iso) : new Date(), online || null); }
+    catch (e) { return FALLBACK_HISTORY; }
+  },
   onEventsUpdated: (cb) => ipcRenderer.on('events-updated', (e, list) => cb(list)),
   onDockState: (cb) => ipcRenderer.on('dock:state', (e, s) => cb(s)),
-  solar2lunar: (y, m, d) => solarlunar.solar2lunar(y, m, d),
+  solar2lunar: (y, m, d) => {
+    if (!solarlunar) return null;
+    try { return solarlunar.solar2lunar(y, m, d); } catch (e) { return null; }
+  },
   holidaysData: { holidays, workdays }
 });

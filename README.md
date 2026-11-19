@@ -73,10 +73,10 @@ git clone https://github.com/kmnn111/cloud-meeting-widget.git
 cd cloud-meeting-widget
 npm install        # 安装依赖
 npm start          # 开发运行
-npm run dist       # 清理旧产物 + 打包 NSIS 安装包 → dist/CloudMeeting-Setup-x.y.z.exe
+npm run dist       # 清理旧产物 + 打包 NSIS 安装包 + 产物完整性校验 → dist/CloudMeeting-Setup-x.y.z.exe
 ```
 
-> `npm run dist` 会先自动清空 `dist/` 里的历史版本安装包，只保留当次构建产物。
+> `npm run dist` 会先自动清空 `dist/` 里的历史版本安装包，只保留当次构建产物；打包结束自动执行 `verify-pack.js`，比对「代码里 require 的本地模块」与「真正打进 asar 的文件」，缺任何一个直接中止发布（防止打包漏文件导致安装后白屏）。
 
 AI 识别走任意 **OpenAI 兼容接口**（`/chat/completions`，视觉模型传 `image_url`），在 设置 → AI 模型 里填 `baseUrl` / 模型名 / API Key 即可，支持 `temperature` 风格调节。
 
@@ -103,8 +103,10 @@ cloud-meeting-widget/
 ├── preload.js          # 上下文桥接
 ├── capture-preload.js  # 截图选区窗口通信
 ├── holidays.js         # 法定节假日 / 调休数据（2025-2026）
+├── history-data.js     # 「历史上的今天」重要会议数据集（离线秒出 + 联网补充）
 ├── local-extract.js    # 免 Key 本地规则解析（未配模型时兜底）
 ├── clean-dist.js       # 打包前自动清理旧版本产物
+├── verify-pack.js      # 打包后完整性校验（漏文件即中止发布）
 ├── renderer/
 │   ├── index.html      # 主面板 + 吸顶胶囊
 │   ├── app.js          # 万年历 / AI 识别 / 会议与人员管理
