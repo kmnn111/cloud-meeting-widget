@@ -13,8 +13,11 @@ let win = null;
 let tray = null;
 let quitting = false;   // 真正退出标志：托盘“退出/更新安装”时置真
 
-/* ---------------- 吸顶小窗（setShape 胶囊） ---------------- */
-const PILL_W = 248, PILL_H = 64;      // 胶囊小窗尺寸（与天气插件一致）
+/* ---------------- 吸顶小窗（setShape 胶囊） ----------------
+   尺寸按内容反推：「历史上的今天」最长条目 35 字；实测宽度临界点 308px（再窄变 3 行被裁），
+   取 340px 留 32px 余量，兼容不同 DPI / 字体渲染差异；高度 86px 容纳
+   标签 + 两行标题 + 高亮会议行（含底片内边距）。 */
+const PILL_W = 340, PILL_H = 86;      // 胶囊小窗尺寸
 const SNAP_IN = 26, SNAP_OUT = 90;    // 拖到距顶端 <=26px 吸附；拖离 >90px 解除
 const DESIGN_W = 400, DESIGN_H = 680; // 窗口设计尺寸（固定，resizable:false）
 let baseSize = { w: DESIGN_W, h: DESIGN_H };
@@ -445,7 +448,45 @@ function createWindow() {
         setTimeout(async () => {
           dockWindow();
           await new Promise(r => setTimeout(r, 900));
-          let img = await win.webContents.capturePage();
+          // 溢出断言：用数据集里最长的一条灌进小窗，量文字是否超出可视区
+          const fit = await win.webContents.executeJavaScript(`(() => {
+            const el = $('pill-hist');
+            const pill = $('pill');
+            const longest = '1954年 第一届全国人民代表大会第一次会议通过《中华人民共和国宪法》';
+            el.textContent = longest;
+            const probe = [];
+            for (const w of [268, 284, 300, 308, 316, 328, 340, 356]) {
+              pill.style.width = w + 'px';
+              const lh = parseFloat(getComputedStyle(el).lineHeight) || 16;
+              probe.push({ w, lines: Math.round(el.scrollHeight / lh), clipped: el.scrollHeight > el.clientHeight + 1 });
+            }
+            pill.style.width = '';
+            const lh = parseFloat(getComputedStyle(el).lineHeight) || 16;
+            const lines = Math.round(el.scrollHeight / lh);
+            const clipped = el.scrollHeight > el.clientHeight + 1;
+            const pb = pill.getBoundingClientRect();
+            const mid = $('pill-mid').getBoundingClientRect();
+            const overflowX = mid.right > pb.right - 4;
+            // 竖向留白断言：内容不得贴边（上下各至少留 4px）
+            const meetB = $('pill-meet').getBoundingClientRect();
+            const labelT = $('pill-hist-label').getBoundingClientRect();
+            const padBottom = Math.round(pb.bottom - meetB.bottom);
+            const padTop = Math.round(labelT.top - pb.top);
+            // 会议行高亮断言：有会议时必须处于 busy 态（青色高亮底片 + 加粗）
+            const meetEl = $('pill-meet');
+            const mcs = getComputedStyle(meetEl);
+            const meet = {
+              busy: meetEl.classList.contains('busy'),
+              color: mcs.color,
+              weight: mcs.fontWeight,
+              bg: mcs.backgroundColor,
+              hasMeeting: meetEl.textContent !== '今日无会议'
+            };
+            return JSON.stringify({ lines, clipped, scrollH: el.scrollHeight,
+              clientH: el.clientHeight, lh: Math.round(lh), overflowX, probe, padTop, padBottom, meet });
+          })()`);
+          console.log('[main] pill overflow test:', fit);
+          let img = await win.webContents.capturePage({ x: 0, y: 0, width: 400, height: 100 });
           fs.writeFileSync(path.join(__dirname, 'debug-shot-dock.png'), img.toPNG());
           console.log('[main] dock shot saved');
           expandDock();
@@ -453,7 +494,10 @@ function createWindow() {
           img = await win.webContents.capturePage();
           fs.writeFileSync(path.join(__dirname, 'debug-shot-expand.png'), img.toPNG());
           console.log('[main] expand shot saved');
-          setTimeout(() => app.exit(0), 300);
+          const r = JSON.parse(fit);
+          const ok = !r.clipped && r.lines <= 2 && !r.overflowX;
+          console.log('[main] pill fit check:', ok ? 'OK' : 'FAIL ' + fit);
+          setTimeout(() => app.exit(ok ? 0 : 1), 300);
         }, 1500);
       }
       if (process.env.CM_SHOT_CAPTURE) {

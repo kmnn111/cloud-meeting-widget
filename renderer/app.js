@@ -65,20 +65,32 @@ function hasOfficialData(year) {
    小窗不再显示秒级时钟（会抖动），主视觉为「历史上的今天」重要会议，
    只在日期变化或会议数据变化时刷新，空闲零重绘。 */
 let histDay = null;   // 已渲染历史的日期，跨天自动刷新
+/* 标签按数据来源区分：只有确属当日史实才标「历史上的今天」，
+   兜底池是精选轮换内容，标「党史上的今天·精选」，不冒充当日事件。 */
+function paintHistory(entry) {
+  const el = $('pill-hist');
+  el.textContent = entry.title;
+  el.title = entry.title;
+  const label = $('pill-hist-label');
+  if (label) {
+    const isToday = entry.source === 'builtin' || entry.source === 'online';
+    label.textContent = isToday ? '📅 历史上的今天' : '📖 党史上的今天 · 精选';
+    label.classList.toggle('muted', !isToday);
+  }
+}
 async function renderHistory() {
   const n = new Date();
   const today = fmtDate(n.getFullYear(), n.getMonth() + 1, n.getDate());
   if (histDay === today) return;   // 同一天不重复渲染，杜绝抖动
   histDay = today;
   let entry = window.api.getTodayEntry(new Date().toISOString(), null);   // 先用内置数据秒出
-  $('pill-hist').textContent = entry.title;
-  $('pill-hist').title = entry.title;
+  paintHistory(entry);
   // 后台尝试联网取更丰富的当日事件，成功则无感替换（带日期校验防竞态）
   try {
     const r = await window.api.getHistoryToday();
     if (r.online && r.items?.length && histDay === today) {
       const better = window.api.getTodayEntry(new Date().toISOString(), r.items);
-      if (better?.title) { $('pill-hist').textContent = better.title; $('pill-hist').title = better.title; }
+      if (better?.title) paintHistory(better);
     }
   } catch (e) { /* 断网无感 */ }
 }
