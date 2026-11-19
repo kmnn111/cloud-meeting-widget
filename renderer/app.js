@@ -48,14 +48,31 @@ function hasOfficialData(year) {
   initDock();
 })();
 
-/* ---------------- 吸顶胶囊（单窗口 setShape 架构） ---------------- */
+/* ---------------- 吸顶胶囊（单窗口 setShape 架构） ----------------
+   小窗不再显示秒级时钟（会抖动），主视觉为「历史上的今天」重要会议，
+   只在日期变化或会议数据变化时刷新，空闲零重绘。 */
+let histDay = null;   // 已渲染历史的日期，跨天自动刷新
+async function renderHistory() {
+  const n = new Date();
+  const today = fmtDate(n.getFullYear(), n.getMonth() + 1, n.getDate());
+  if (histDay === today) return;   // 同一天不重复渲染，杜绝抖动
+  histDay = today;
+  let entry = window.api.getTodayEntry(new Date().toISOString(), null);   // 先用内置数据秒出
+  $('pill-hist').textContent = entry.title;
+  $('pill-hist').title = entry.title;
+  // 后台尝试联网取更丰富的当日事件，成功则无感替换（带日期校验防竞态）
+  try {
+    const r = await window.api.getHistoryToday();
+    if (r.online && r.items?.length && histDay === today) {
+      const better = window.api.getTodayEntry(new Date().toISOString(), r.items);
+      if (better?.title) { $('pill-hist').textContent = better.title; $('pill-hist').title = better.title; }
+    }
+  } catch (e) { /* 断网无感 */ }
+}
+
 function renderPill() {
   if (document.hidden) return;   // 窗口隐藏时跳过刷新，省 CPU
   const n = new Date();
-  $('pill-time').textContent = `${pad2(n.getHours())}:${pad2(n.getMinutes())}`;
-  $('pill-sec').textContent = pad2(n.getSeconds());
-  $('pill-date').textContent =
-    `${n.getFullYear()}年${n.getMonth() + 1}月${n.getDate()}日 周${'日一二三四五六'[n.getDay()]}`;
   const today = fmtDate(n.getFullYear(), n.getMonth() + 1, n.getDate());
   const list = events.filter(e => e.date === today)
     .sort((a, b) => (a.start_time || '').localeCompare(b.start_time || ''));
@@ -67,7 +84,7 @@ function renderPill() {
     return;
   }
   const first = list[0];
-  const tp = first.start_time ? first.start_time + ' ' : '';   // 无具体时间不显示"时间待定"
+  const tp = first.start_time ? first.start_time + ' ' : (first.period ? first.period + ' ' : '');
   line.textContent = list.length === 1
     ? `${tp}${first.title || '会议'}${first.location ? ' · ' + first.location : ''}`
     : `${tp}${first.title || '会议'} 等 ${list.length} 场`;
@@ -78,13 +95,20 @@ function renderPill() {
 function applyDockState(s) {
   document.body.classList.toggle('docked', !!s.docked);
   document.body.classList.toggle('expanded', !!s.expanded);
-  if (s.docked && !s.expanded) renderPill();
+  if (s.docked && !s.expanded) { renderPill(); renderHistory(); }
 }
 
 function initDock() {
-  // 1s 轻量刷新：只更新胶囊时钟与当日会议，收起态也保持走时
+  // 事件驱动刷新：历史每天一次、会议数据变更时刷新；不再每秒 setInterval（消灭抖动与空转）
   renderPill();
-  setInterval(renderPill, 1000);
+  renderHistory();
+  if (window.api.onHistoryTick) window.api.onHistoryTick(() => { histDay = null; renderHistory(); });
+  // 每分钟兜底检查跨天（极轻量，仅比对日期字符串，不变则零 DOM 写入）
+  setInterval(() => {
+    const n = new Date();
+    const d = fmtDate(n.getFullYear(), n.getMonth() + 1, n.getDate());
+    if (histDay !== d) { histDay = null; renderHistory(); renderPill(); }
+  }, 60000);
 
   applyDockState({ docked: !!settings.docked, expanded: false });
   if (window.api.onDockState) window.api.onDockState(applyDockState);
@@ -209,9 +233,9 @@ function renderEvents() {
     return;
   }
   box.innerHTML = list.map(e => {
-    // 没填具体时分的会议（只到日期或上午/下午）不显示"时间待定"，时间行整段省略
     const meta = [];
     if (e.start_time) meta.push(e.start_time + (e.end_time ? ' - ' + e.end_time : ''));
+    else if (e.period) meta.push(e.period);   // 上午/下午/晚上/全天等模糊时段
     if (e.location) meta.push(e.location);
     return `
     <div class="event-card" data-id="${e.id}" title="点击查看会议详情">
@@ -316,6 +340,7 @@ function bindGlobal() {
   $('people-input').addEventListener('keydown', e => { if (e.key === 'Enter') addPerson(); });
 
   // 确认面板
+  bindPeriod();
   $('btn-cancel-meeting').onclick = () => hideOverlay();
   $('btn-save-meeting').onclick = saveMeeting;
   $('btn-delete-meeting').onclick = deleteMeeting;
@@ -388,13 +413,11 @@ async function runAI() {
     st.textContent = r.error;
     return;
   }
-  st.textContent = r.local ? '本地解析完成 · 结果仅供参考，请核对' : '识别完成';
+  st.textContent = r.local ? '本地解析完成 · 请核对下方内容' : '识别完成 · 请核对下方内容';
   setTimeout(() => st.classList.add('hidden'), 2600);
   fillConfirm(r.meeting);
-  // 命中同名旧记录（默认勾选了移除）时不自动写入，让用户确认改期替换，避免误删例会
-  const dupRemovals = $('cf-dup-list').querySelectorAll('input:checked').length;
-  if (settings.autoWrite && !dupRemovals) { saveMeeting(); }
-  else showPanel('confirm-panel');
+  // 始终弹确认卡让用户核对，绝不静默写入日历（含改期替换场景）
+  showPanel('confirm-panel');
 }
 
 /* ---------------- 人员管理 ---------------- */
@@ -502,6 +525,27 @@ function renderDupBox() {
   }).join('');
 }
 
+// 时段选择（上午/中午/下午/晚上/全天），null=具体时间
+function setPeriod(p) {
+  const val = p || '';
+  $('cf-period').querySelectorAll('.period-chip').forEach(c => c.classList.toggle('on', c.dataset.p === val));
+}
+function getPeriod() {
+  const on = $('cf-period').querySelector('.period-chip.on');
+  return on ? (on.dataset.p || null) : null;
+}
+// 时段 chip 点击（事件委托在 bindGlobal 里绑定一次）
+function bindPeriod() {
+  $('cf-period').addEventListener('click', e => {
+    const chip = e.target.closest('.period-chip');
+    if (!chip) return;
+    setPeriod(chip.dataset.p);
+    // 选了模糊时段 → 清空具体时间；选"具体时间"→ 不清空（等用户填）
+    if (chip.dataset.p) { $('cf-start').value = ''; $('cf-end').value = ''; }
+    if (!editingId) renderDupBox();
+  });
+}
+
 function fillConfirm(m) {
   editingId = null;
   $('cf-head-title').textContent = 'AI 识别结果';
@@ -512,6 +556,7 @@ function fillConfirm(m) {
   $('cf-date').value = m.date && m.date !== 'null' ? m.date : selectedDate;
   $('cf-start').value = m.start_time && m.start_time !== 'null' ? m.start_time : '';
   $('cf-end').value = m.end_time && m.end_time !== 'null' ? m.end_time : '';
+  setPeriod(m.period && m.period !== 'null' ? m.period : null);
   $('cf-location').value = m.location && m.location !== 'null' ? m.location : '';
   $('cf-notes').value = m.notes && m.notes !== 'null' ? m.notes : '';
   const extracted = Array.isArray(m.attendees) ? m.attendees.filter(a => a && a !== 'null') : [];
@@ -524,7 +569,10 @@ function fillConfirm(m) {
 // 确认面板内改动标题/日期/时间时，同步刷新改期匹配（新建模式下）
 ['cf-title', 'cf-date', 'cf-start'].forEach(id => {
   const el = $(id);
-  el.addEventListener('input', () => { if (!editingId) renderDupBox(); });
+  el.addEventListener('input', () => {
+    if (id === 'cf-start' && el.value) setPeriod('');   // 填了具体时间 → 取消模糊时段
+    if (!editingId) renderDupBox();
+  });
   el.addEventListener('change', () => { if (!editingId) renderDupBox(); });
 });
 
@@ -539,6 +587,7 @@ function openEventDetail(e) {
   $('cf-date').value = e.date || '';
   $('cf-start').value = e.start_time || '';
   $('cf-end').value = e.end_time || '';
+  setPeriod(e.period || null);
   $('cf-location').value = e.location || '';
   $('cf-notes').value = e.notes || '';
   $('cf-people').innerHTML = '';   // 清掉上次残留的人员 chips
@@ -566,6 +615,7 @@ async function saveMeeting() {
     date: $('cf-date').value,
     start_time: $('cf-start').value || null,
     end_time: $('cf-end').value || null,
+    period: getPeriod(),
     location: $('cf-location').value.trim() || null,
     attendees,
     notes: $('cf-notes').value.trim() || null
@@ -601,10 +651,10 @@ async function saveMeeting() {
   hideOverlay();
   const [y, m] = meeting.date.split('-').map(Number);
   viewYear = y; viewMonth = m;
-  renderCalendar(); renderEvents();
-  toast(wasEdit ? '修改已保存'
+  renderCalendar(); renderEvents(); renderPill();
+  toast(wasEdit ? '修改已保存 ✓'
     : replaced ? `已写入日历 ✓（改期替换：旧记录已移除 ${replaced} 条）`
-    : '已写入日历 ✓（.ics 已生成并在文件夹中显示，双击可导入系统日历）');
+    : '已写入日历 ✓');
 }
 
 /* ---------------- 设置 ---------------- */
@@ -613,7 +663,6 @@ function fillSettings() {
   $('set-model').value = settings.model || '';
   $('set-apikey').value = settings.apiKey || '';
   $('set-style').value = settings.style ?? 0.2;
-  $('set-autowrite').checked = !!settings.autoWrite;
   $('set-autoopenics').checked = !!settings.autoOpenIcs;
   $('set-autostart').checked = !!settings.autoStart;
   $('set-alwaysontop').checked = !!settings.alwaysOnTop;
@@ -636,7 +685,7 @@ async function saveSettings() {
     model: $('set-model').value.trim(),
     apiKey: $('set-apikey').value.trim(),
     style: parseFloat($('set-style').value),
-    autoWrite: $('set-autowrite').checked,
+    autoWrite: false,   // 始终弹确认卡核对，不再提供免确认直写
     autoOpenIcs: $('set-autoopenics').checked,
     autoStart: $('set-autostart').checked,
     alwaysOnTop: $('set-alwaysontop').checked,

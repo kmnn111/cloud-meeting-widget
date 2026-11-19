@@ -21,6 +21,7 @@ r = localExtract('明天上午召开安全生产专题会议\n地点：三号会
 t('无时间日期', r.date, v => !!v);
 t('无时间 start', r.start_time, null);
 t('无时间备注含时段', r.notes, v => v === null || v.includes('上午'));
+t('模糊时段写入 period', r.period, '上午');
 
 // 3) 时间范围"下午2点到4点"
 r = localExtract('11月21日下午2点到4点召开经济运行分析会');

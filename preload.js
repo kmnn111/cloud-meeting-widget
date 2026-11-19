@@ -1,6 +1,7 @@
 const { contextBridge, ipcRenderer } = require('electron');
 const solarlunar = require('solarlunar');
 const { holidays, workdays } = require('./holidays');
+const historyData = require('./history-data');
 
 contextBridge.exposeInMainWorld('api', {
   loadState: () => ipcRenderer.invoke('load-state'),
@@ -26,6 +27,8 @@ contextBridge.exposeInMainWorld('api', {
   pillMenu: () => ipcRenderer.invoke('pill-menu'),
   checkUpdate: () => ipcRenderer.invoke('check-update'),
   onUpdateStatus: (cb) => ipcRenderer.on('update-status', (e, msg) => cb(msg)),
+  getHistoryToday: () => ipcRenderer.invoke('get-history-today'),
+  getTodayEntry: (iso, online) => historyData.getToday(iso ? new Date(iso) : new Date(), online || null),
   onEventsUpdated: (cb) => ipcRenderer.on('events-updated', (e, list) => cb(list)),
   onDockState: (cb) => ipcRenderer.on('dock:state', (e, s) => cb(s)),
   solar2lunar: (y, m, d) => solarlunar.solar2lunar(y, m, d),

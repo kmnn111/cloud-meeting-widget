@@ -199,7 +199,6 @@ function localExtract(text, now = new Date()) {
   const t = parseTime(whole);
   const vague = parseVagueTime(whole);
   const notes = [];
-  if (!t.start_time && vague && vague !== '全天') notes.push(vague);
   const m = text.match(/(?:备注|说明|注)\s*[：:]\s*([^\n]{2,60})/);
   if (m) notes.push(m[1].trim());
   return {
@@ -207,6 +206,7 @@ function localExtract(text, now = new Date()) {
     date: parseDate(whole, now),
     start_time: t.start_time,
     end_time: t.end_time,
+    period: t.start_time ? null : (vague && vague !== '全天' ? vague : (vague === '全天' ? '全天' : null)),
     location: parseLocation(whole),
     attendees: parseAttendees(whole),
     notes: notes.length ? notes.join('；') : null,

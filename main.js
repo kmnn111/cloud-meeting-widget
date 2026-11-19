@@ -47,7 +47,7 @@ const DEFAULT_UPDATE_URL = 'https://github.com/kmnn111/cloud-meeting-widget/rele
 let settings = { ...DEFAULT_SETTINGS };
 
 // 自检模式：重定向 userData，避免测试落盘覆盖真实日历数据
-if (process.env.CM_TEST_DUP) {
+if (process.env.CM_TEST_DUP || process.env.CM_TEST_UI) {
   try { app.setPath('userData', path.join(__dirname, '.test-userdata')); } catch (e) { }
 }
 const dataDir = () => app.getPath('userData');
@@ -535,6 +535,44 @@ $g.Dispose();$bmp.Dispose()`;
           setTimeout(() => app.exit(0), 300);
         }, 1200);
       }
+      if (process.env.CM_TEST_UI) {
+        // v1.2.7 UI 自检：小窗无时钟/历史渲染、时段 chip、expanded 隐藏小窗、确认卡始终弹
+        setTimeout(async () => {
+          const out = await win.webContents.executeJavaScript(`(async () => {
+            // 1) 小窗不再有秒级时钟元素
+            const noClock = !$('pill-time') && !$('pill-sec');
+            // 2) 历史条目有内容
+            await renderHistory();
+            const hist = $('pill-hist').textContent.trim();
+            // 3) 时段 chip：点"下午"→ period=下午、具体时间被清空
+            fillConfirm({ title:'时段测试会', date:'2026-12-01', start_time:'10:00', period:null, location:null, attendees:[], notes:null });
+            $('cf-period').querySelector('[data-p="下午"]').click();
+            const periodOn = getPeriod();
+            const startCleared = $('cf-start').value === '';
+            // 4) 填具体时间 → 时段自动清空
+            $('cf-start').value = '15:30';
+            $('cf-start').dispatchEvent(new Event('input', {bubbles:true}));
+            const periodCleared = getPeriod() === null;
+            setPeriod('晚上');
+            $('cf-start').value = '';
+            $('cf-start').dispatchEvent(new Event('input', {bubbles:true}));
+            setPeriod('下午');
+            await saveMeeting();
+            const savedPeriod = events.find(e => e.title === '时段测试会')?.period;
+            // 5) expanded 态小窗 display:none
+            document.body.classList.add('expanded');
+            const pillHidden = getComputedStyle($('pill')).display === 'none';
+            document.body.classList.remove('expanded');
+            return JSON.stringify({ noClock, histLen: hist.length, periodOn, startCleared, periodCleared, savedPeriod, pillHidden });
+          })()`);
+          console.log('[main] UI test:', out);
+          const r = JSON.parse(out);
+          const ok = r.noClock && r.histLen > 4 && r.periodOn === '下午' && r.startCleared
+            && r.periodCleared && r.savedPeriod === '下午' && r.pillHidden;
+          console.log('[main] UI check:', ok ? 'OK' : 'FAIL ' + out);
+          setTimeout(() => app.exit(ok ? 0 : 1), 300);
+        }, 1300);
+      }
       if (process.env.CM_TEST_DUP) {
         // 改期识别端到端自检：旧会议 + AI 识别改期 → 同名匹配 → 勾选移除 → 只剩新日期
         setTimeout(async () => {
@@ -783,6 +821,33 @@ ipcMain.handle('save-people', (e, people) => {
   return true;
 });
 
+/* ---------------- 历史上的今天（可选联网 + 缓存 + 内置兜底） ----------------
+   免费公开源失败/无网时回退内置精选数据集，保证离线也有内容、零抖动。 */
+let histCache = { day: '', items: null, tried: false };
+ipcMain.handle('get-history-today', async () => {
+  const now = new Date();
+  const pad = n => String(n).padStart(2, '0');
+  const day = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+  if (histCache.day === day) return { items: histCache.items, online: !!histCache.items };
+  // 可选联网：免费公开接口，3 秒超时；失败静默回退内置，并缓存当天失败避免反复重试
+  histCache.tried = true;
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 3000);
+    const res = await fetch('https://api.ooopn.com/history/api.php?type=json', { signal: ctrl.signal });
+    clearTimeout(timer);
+    if (res.ok) {
+      const data = await res.json();
+      if (Array.isArray(data?.content) && data.content.length) {
+        histCache = { day, items: data.content, tried: true };
+        return { items: data.content, online: true };
+      }
+    }
+  } catch (e) { /* 无网 / 超时 / 接口变更 → 静默回退 */ }
+  histCache = { day, items: null, tried: true };
+  return { items: null, online: false };
+});
+
 ipcMain.handle('read-clipboard-image', () => {
   const { clipboard } = require('electron');
   const img = clipboard.readImage();
@@ -809,10 +874,10 @@ ipcMain.handle('ai-extract', async (e, { text, imageDataUrl, settings: s }) => {
   const todayStr = `${now.getFullYear()}年${now.getMonth() + 1}月${now.getDate()}日 星期${week}`;
   const sys = `你是会议信息提取助手。今天是${todayStr}。
 从用户提供的文字或图片中提取会议信息，严格只输出一个JSON对象，不要输出任何其他文字：
-{"title":"会议名称","date":"YYYY-MM-DD","start_time":"HH:MM","end_time":"HH:MM或null","location":"地点或null","attendees":["人名",...],"notes":"补充说明或null"}
+{"title":"会议名称","date":"YYYY-MM-DD","start_time":"HH:MM","end_time":"HH:MM或null","period":"上午/中午/下午/晚上/全天 或null","location":"地点或null","attendees":["人名",...],"notes":"补充说明或null"}
 规则：
 1. 相对日期（今天/明天/下周三等）以今天为基准推算；
-2. 只有日期没有时间时，start_time 填 null；若原文只有“上午/下午/晚上”等模糊时段而无具体时分，start_time 填 null 并把该时段写入 notes；
+2. 有具体时分时 start_time 填 "HH:MM"、period 填 null；只有"上午/下午/晚上/中午/全天"等模糊时段而无具体时分时，start_time、end_time 都填 null，并把该时段填入 period（如"下午"）；两者都没有时 period 填 null；
 3. attendees 提取通知中出现的参会人姓名或称谓，提取不到给空数组；
 4. title 必须是完整会议名称，要带主办单位/机构名做前缀——如「市公安局第X次党委会议」，不要只写「第X次党委会议」；单位名从通知抬头、落款、发文机关或行文主语（如「XX局党委定于…」「XX公司办公室」）判断；原文确实找不到单位名才不加；
 5. 严禁编造原文没有的信息，无法确定的字段填 null。`;
@@ -905,25 +970,27 @@ ipcMain.handle('save-ics', async (e, meeting) => {
       `DTEND;VALUE=DATE:${fmt(d1)}`
     ];
   }
+  const desc = [
+    !meeting.start_time && meeting.period ? `时段：${meeting.period}` : null,
+    meeting.attendees?.length ? `参会人：${meeting.attendees.join('、')}` : null,
+    meeting.notes || null
+  ].filter(Boolean).join('；');
   const ics = [
     'BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//CloudMeeting//CN', 'CALSCALE:GREGORIAN',
     'BEGIN:VEVENT',
     `UID:${Date.now()}@cloudmeeting`,
     ...timeLines.filter(Boolean),
-    `SUMMARY:${(meeting.title || '会议').replace(/[,;\\]/g, ' ')}`,
+    `SUMMARY:${(meeting.title || '会议').replace(/[,;\\]/g, ' ')}${!meeting.start_time && meeting.period ? '（' + meeting.period + '）' : ''}`,
     meeting.location ? `LOCATION:${meeting.location}` : null,
-    meeting.attendees?.length ? `DESCRIPTION:参会人：${meeting.attendees.join('、')}${meeting.notes ? '；' + meeting.notes : ''}` :
-      (meeting.notes ? `DESCRIPTION:${meeting.notes}` : null),
+    desc ? `DESCRIPTION:${desc}` : null,
     'END:VEVENT', 'END:VCALENDAR'
   ].filter(Boolean).join('\r\n');
   const file = path.join(dataDir(), `${meeting.date || 'meeting'}-${meeting.title || '会议'}.ics`.replace(/[\\/:*?"<>|]/g, '_'));
   fs.writeFileSync(file, '\ufeff' + ics, 'utf-8');
-  // 默认只在资源管理器中定位文件：shell.openPath 会触发 Windows"始终使用此应用打开 .ics"关联弹窗
-  // 用户可在设置里开启"自动打开 .ics"走 openPath（首次仍会弹一次系统关联选择）
+  // 丝滑无感：默认静默生成 .ics，不弹资源管理器、不弹系统关联窗；
+  // 仅当用户显式开启"自动打开 .ics"才 openPath。可在托盘/设置里手动打开日历文件夹。
   const s = { ...DEFAULT_SETTINGS, ...readJson(settingsFile(), {}) };
-  if (process.env.CM_TEST_DUP) return file;   // 自检模式不弹资源管理器
-  if (s.autoOpenIcs) shell.openPath(file);
-  else shell.showItemInFolder(file);
+  if (s.autoOpenIcs && !process.env.CM_TEST_DUP && !process.env.CM_TEST_UI) shell.openPath(file);
   return { ok: true, file };
 });
 

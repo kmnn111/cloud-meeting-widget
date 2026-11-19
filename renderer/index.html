@@ -118,10 +118,6 @@
         <button id="btn-check-update" class="mini-btn">检查更新</button>
       </div>
       <div class="switch-row">
-        <span>识别后自动写入日历（免确认）</span>
-        <label class="switch"><input id="set-autowrite" type="checkbox"><span class="slider"></span></label>
-      </div>
-      <div class="switch-row">
         <span>写入后自动打开 .ics 导入系统日历<small>（会弹系统文件关联提示，默关）</small></span>
         <label class="switch"><input id="set-autoopenics" type="checkbox"><span class="slider"></span></label>
       </div>
@@ -160,6 +156,15 @@
         <div><label>开始</label><input id="cf-start" type="time"></div>
         <div><label>结束</label><input id="cf-end" type="time"></div>
       </div>
+      <label>时段（未定具体时间时选，可与具体时间并存）</label>
+      <div id="cf-period" class="period-wrap">
+        <span class="period-chip" data-p="上午">上午</span>
+        <span class="period-chip" data-p="中午">中午</span>
+        <span class="period-chip" data-p="下午">下午</span>
+        <span class="period-chip" data-p="晚上">晚上</span>
+        <span class="period-chip" data-p="全天">全天</span>
+        <span class="period-chip" data-p="">具体时间</span>
+      </div>
       <label>地点</label>
       <input id="cf-location" type="text" placeholder="（无）">
       <label>参会人 · 点击勾选</label>
@@ -188,8 +193,8 @@
 <div id="pill">
   <div id="pill-grip" class="drag" title="按住拖动（拖离顶部即可退出吸顶）"><div class="logo-dot"></div></div>
   <div id="pill-mid">
-    <div id="pill-time-line"><span id="pill-time">--:--</span><span id="pill-sec">00</span></div>
-    <div id="pill-date">----年--月--日</div>
+    <div id="pill-hist-label">📅 历史上的今天</div>
+    <div id="pill-hist">正在加载…</div>
     <div id="pill-meet">今日无会议</div>
   </div>
   <div id="pill-right">

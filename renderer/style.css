@@ -370,6 +370,22 @@ input[type=range] { width: 100%; accent-color: var(--accent); margin-top: 4px; }
 .cf-row { display: flex; gap: 6px; }
 .cf-row > div { flex: 1; }
 
+/* 时段选择 chips（上午/中午/下午/晚上/全天） */
+.period-wrap { display: flex; flex-wrap: wrap; gap: 5px; margin: 2px 0 6px; }
+.period-chip {
+  font-size: 10.5px; color: var(--ink-2); cursor: pointer; user-select: none;
+  padding: 4px 9px; border-radius: 999px;
+  background: rgba(255, 255, 255, 0.66);
+  border: 1px solid rgba(143, 161, 178, 0.28);
+  transition: background .16s ease, color .16s ease, border-color .16s ease, transform .12s ease;
+}
+.period-chip:hover { background: rgba(255, 255, 255, 0.95); transform: translateY(-1px); }
+.period-chip.on {
+  color: #fff; font-weight: 600; border-color: transparent;
+  background: linear-gradient(135deg, var(--accent), var(--accent-deep));
+  box-shadow: 0 3px 10px rgba(10, 132, 255, 0.28);
+}
+
 /* 改期识别横幅（AI 识别结果中命中同名旧记录） */
 .dup-box {
   background: rgba(255, 202, 88, 0.16);
@@ -417,28 +433,28 @@ body.docked:not(.expanded) #pill {
   border-top-color: transparent;          /* 贴顶边不画描边，与屏幕边缘融合 */
   transition: opacity .22s ease, visibility 0s;
 }
+/* 展开大窗时彻底移除小窗（display:none），杜绝透明小窗残影压在面板上 */
+body.expanded #pill { display: none; }
 #pill-grip {
   -webkit-app-region: drag;
   display: flex; align-items: center; justify-content: center;
   width: 42px; height: 100%; flex: none; cursor: grab;
 }
 #pill-grip:active { cursor: grabbing; }
-#pill-mid { flex: 1; min-width: 0; display: flex; flex-direction: column; justify-content: center; gap: 1px; }
-#pill-time-line { display: flex; align-items: baseline; gap: 2px; }
-#pill-time {
-  font-size: 17px; font-weight: 500; line-height: 1.05;
-  color: var(--ink); font-variant-numeric: tabular-nums;
+#pill-mid { flex: 1; min-width: 0; display: flex; flex-direction: column; justify-content: center; gap: 2px; }
+#pill-hist-label {
+  font-size: 8.5px; color: var(--accent); font-weight: 600; letter-spacing: .3px;
+  line-height: 1.1; display: flex; align-items: center; gap: 3px;
 }
-#pill-sec { font-size: 9px; color: var(--ink-3); font-weight: 500; vertical-align: 0.42em; }
-#pill-date {
-  font-size: 10px; color: var(--ink-2); line-height: 1.15;
+#pill-hist {
+  font-size: 10px; color: var(--ink); font-weight: 500; line-height: 1.25;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 #pill-meet {
-  font-size: 9.5px; color: var(--ink-3); line-height: 1.15;
+  font-size: 9px; color: var(--ink-3); line-height: 1.15;
   max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-#pill-meet.busy { color: var(--accent); font-weight: 500; }
+#pill-meet.busy { color: var(--teal); font-weight: 500; }
 #pill-right { text-align: right; padding-left: 6px; flex-shrink: 0; }
 #pill-count { font-size: 16px; font-weight: 500; color: var(--ink); line-height: 1.1; }
 #pill-count-label { font-size: 8px; color: var(--ink-3); }
